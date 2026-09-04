@@ -141,47 +141,94 @@ def mine(log_text: str) -> dict:
     }
 
 
-def render(report: dict, log_name: str) -> str:
+# GitHub rejects an issue-comment body longer than 65536 characters with a 422. That
+# is not a hypothetical: per-file row caps alone do not bound the total, because
+# nothing limits how many files are listed, and once a build gets further the errors
+# spread wider. A rejected PATCH leaves the previous comment untouched, so the PR ends
+# up showing stale errors from an older commit -- the one failure mode that makes this
+# whole reporting path worse than not having it. The budget leaves headroom for the
+# HTML marker and for whatever escaping the API applies.
+COMMENT_BUDGET = 60_000
+
+# Successively tighter (rows per file, files shown). The last rung drops the detail
+# tables altogether and keeps only the file/count list, which always fits.
+FIT_LADDER = [(60, None), (40, None), (25, None), (15, None), (10, 40), (6, 25), (3, 12), (0, 20)]
+
+
+def _render(report: dict, log_name: str, rows_per_file: int, max_files: int | None,
+            head_sha: str | None = None, run_url: str | None = None) -> str:
     out: list[str] = []
     ke = report["kotlin_errors"]
     je = report["java_errors"]
 
     out.append("## Build failure")
     out.append("")
-    out.append(f"Mined from `{log_name}` ({report['line_count']:,} lines).")
+    # Which commit this describes is the single most important line in the report. The
+    # comment is updated in place, so when the update fails it silently keeps describing
+    # an older commit -- and a reviewer who does not notice reads stale errors as the
+    # current state. Stamping the SHA makes staleness visible at a glance.
+    provenance = [f"Mined from `{log_name}` ({report['line_count']:,} lines)"]
+    if head_sha:
+        provenance.append(f"commit `{head_sha[:10]}`")
+    out.append(" · ".join(provenance) + ".")
+    if run_url:
+        out.append("")
+        out.append(f"[Job log for this run]({run_url})")
     out.append("")
 
     if report["failed_tasks"]:
         out.append("**Failed task(s):** " + ", ".join(f"`{t}`" for t in report["failed_tasks"]))
         out.append("")
 
+    omitted: list[str] = []
+
     if ke:
         by_file: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         for path, line, col, msg in ke:
             by_file[path].append((line, col, msg))
+        # Most errors first: that file is usually the one whose mistake cascades.
+        ranked = sorted(by_file.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        shown = ranked if max_files is None else ranked[:max_files]
 
         out.append(f"### {len(ke)} Kotlin compiler error(s) in {len(by_file)} file(s)")
         out.append("")
-        # Most errors first: that file is usually the one whose mistake cascades.
-        for path, items in sorted(by_file.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-            out.append(f"<details><summary><code>{path}</code> — {len(items)} error(s)</summary>")
-            out.append("")
-            out.append("| Line | Error |")
-            out.append("|---|---|")
-            for line, _col, msg in sorted(items)[:60]:
-                # Escaped outside the f-string: a backslash is not allowed inside an
-                # f-string expression before Python 3.12, and a `|` in a compiler
-                # message would otherwise break the Markdown table.
-                escaped = msg.replace("|", "\\|")
-                out.append(f"| {line} | `{escaped}` |")
-            if len(items) > 60:
-                out.append(f"| … | {len(items) - 60} more |")
-            out.append("")
-            out.append("</details>")
+
+        if rows_per_file > 0:
+            for path, items in shown:
+                out.append(f"<details><summary><code>{path}</code> — {len(items)} error(s)</summary>")
+                out.append("")
+                out.append("| Line | Error |")
+                out.append("|---|---|")
+                for line, _col, msg in sorted(items)[:rows_per_file]:
+                    # Escaped outside the f-string: a backslash is not allowed inside an
+                    # f-string expression before Python 3.12, and a `|` in a compiler
+                    # message would otherwise break the Markdown table.
+                    escaped = msg.replace("|", "\\|")
+                    out.append(f"| {line} | `{escaped}` |")
+                if len(items) > rows_per_file:
+                    out.append(f"| … | {len(items) - rows_per_file} more |")
+                out.append("")
+                out.append("</details>")
+                out.append("")
+        else:
+            for path, items in shown:
+                out.append(f"- `{path}` — {len(items)} error(s)")
             out.append("")
 
+        if len(ranked) > len(shown):
+            hidden = len(ranked) - len(shown)
+            hidden_errors = sum(len(items) for _p, items in ranked[len(shown):])
+            omitted.append(f"{hidden} further file(s) ({hidden_errors} error(s)) not listed")
+        if rows_per_file == 60 and any(len(i) > 60 for _p, i in ranked):
+            pass  # per-file truncation is already stated inline in each table
+        if rows_per_file and rows_per_file < 60:
+            omitted.append(f"tables narrowed to {rows_per_file} row(s) per file")
+        if rows_per_file == 0:
+            omitted.append("detail tables dropped entirely")
+
         # The single most common error class, because fixing one symbol often
-        # clears dozens of downstream errors.
+        # clears dozens of downstream errors. Kept even when the tables are cut:
+        # it is ten lines and usually the fastest way in.
         refs = Counter(m.group(1) for _p, _l, _c, msg in ke
                        if (m := UNRESOLVED.search(msg)))
         if refs:
@@ -237,7 +284,30 @@ def render(report: dict, log_name: str) -> str:
                    f"not listed._")
         out.append("")
 
+    if omitted:
+        out.append(f"_Trimmed to fit GitHub's comment size limit: {'; '.join(omitted)}. "
+                   f"The full log is in the `build-log` artifact of this run._")
+        out.append("")
+
     return "\n".join(out)
+
+
+def render(report: dict, log_name: str, max_chars: int = COMMENT_BUDGET,
+           head_sha: str | None = None, run_url: str | None = None) -> str:
+    """Render the report, shrinking it until it fits `max_chars`.
+
+    Ratcheting down a ladder of caps keeps the most useful content: full tables first,
+    then narrower tables, then only the file list. Every rung states in the output what
+    was dropped, so a trimmed report never looks like a complete one.
+    """
+    text = ""
+    for rows_per_file, max_files in FIT_LADDER:
+        text = _render(report, log_name, rows_per_file, max_files, head_sha, run_url)
+        if len(text) <= max_chars:
+            return text
+    # Unreachable in practice -- the last rung lists at most 20 filenames -- but a
+    # hard truncation is still better than a 422 that loses the whole report.
+    return text[:max_chars] + "\n\n_Truncated._"
 
 
 def main(argv: list[str]) -> int:
@@ -246,6 +316,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("log", nargs="?", default="build.log", help="captured Gradle log")
     parser.add_argument("-o", "--output", help="write Markdown here as well as stdout")
     parser.add_argument("--stats", action="store_true", help="print counts only")
+    parser.add_argument("--head-sha", help="commit the log was produced from; stamped "
+                                           "into the report so a stale comment is obvious")
+    parser.add_argument("--run-url", help="link to the CI job that produced the log")
     parser.add_argument("--strip-prefix",
                         help="strip everything up to and including this substring from "
                              "source paths (default: auto-detect the CI checkout prefix)")
@@ -275,7 +348,7 @@ def main(argv: list[str]) -> int:
               f"files={len({p for p, *_ in report['kotlin_errors']})}")
         return 0
 
-    markdown = render(report, path.name)
+    markdown = render(report, path.name, head_sha=args.head_sha, run_url=args.run_url)
     print(markdown)
     if args.output:
         Path(args.output).write_text(markdown, encoding="utf-8")

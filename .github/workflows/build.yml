@@ -214,34 +214,81 @@ jobs:
       # build never gets fixed. This mines the log and puts the signal where the
       # reviewer already is.
       - name: Report failure
+        # Reporting is best-effort and never fails the job: the build is already red
+        # from the step above, and a second failure here would only add noise. What
+        # matters is that the PR never ends up describing an older commit, because a
+        # stale comment reads exactly like a current one.
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
+          summary="$GITHUB_STEP_SUMMARY"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
           if [ ! -f build.log ]; then
-            echo "No build.log captured; the failure happened before Gradle ran." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "No build.log captured; the failure happened before Gradle ran." | tee -a "$summary"
             exit 0
           fi
 
-          python3 scripts/report_build_failure.py build.log -o failure-report.md
-          cat failure-report.md >> "$GITHUB_STEP_SUMMARY"
+          if ! python3 scripts/report_build_failure.py build.log \
+                 -o failure-report.md \
+                 --head-sha "${{ github.sha }}" \
+                 --run-url "$run_url"; then
+            echo "report_build_failure.py failed; the raw log is in the build-log artifact." | tee -a "$summary"
+            exit 0
+          fi
+          cat failure-report.md >> "$summary"
 
-          # One comment per PR, updated in place, so a branch that fails ten times
-          # does not leave ten walls of text behind.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            marker="<!-- sarothi-build-failure -->"
-            pr="${{ github.event.pull_request.number }}"
-            body="$marker"$'\n'"$(cat failure-report.md)"
-            existing=$(gh pr view "$pr" --json comments \
-              -q '.comments[] | select(.body | contains("'"$marker"'")) | .url' | tail -1)
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            exit 0
+          fi
+
+          marker="<!-- sarothi-build-failure -->"
+          pr="${{ github.event.pull_request.number }}"
+          existing=$(gh pr view "$pr" --json comments \
+            -q '.comments[] | select(.body | contains("'"$marker"'")) | .url' | tail -1) || existing=""
+
+          # One comment per PR, updated in place, so a branch that fails ten times does
+          # not leave ten walls of text behind.
+          post() {
             if [ -n "$existing" ]; then
-              id="${existing##*/}"
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -f body="$body" > /dev/null
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing##*/}" \
+                -f body="$1" > /dev/null
             else
-              gh pr comment "$pr" --body "$body" > /dev/null
+              gh pr comment "$pr" --body "$1" > /dev/null
+            fi
+          }
+
+          body="$marker
+          $(cat failure-report.md)"
+
+          if post "$body"; then
+            echo "Posted the failure report to PR #$pr." >> "$summary"
+          else
+            # The full report can still be rejected -- body too long, rate limit, a
+            # transient API error. Fall back to something small enough to always land,
+            # because leaving the previous comment in place is the worst outcome: it
+            # would keep reporting an older commit's errors as though they were current.
+            # Written as a heredoc with no backticks, so nothing here needs escaping.
+            short=$(cat <<EOF
+          $marker
+          ## Build failure
+
+          Commit ${{ github.sha }} failed to build.
+
+          This is a placeholder, not the real report: GitHub rejected the full text, so
+          nothing here describes an older commit by mistake. See the job log at
+          $run_url and the build-log artifact attached to that run.
+          EOF
+          )
+            if post "$short"; then
+              echo "Full report was rejected; posted a short pointer comment instead." >> "$summary"
+            else
+              echo "Could not comment on PR #$pr at all." >> "$summary"
             fi
           fi
+          exit 0
 
       - name: Upload failure log
         if: failure()
