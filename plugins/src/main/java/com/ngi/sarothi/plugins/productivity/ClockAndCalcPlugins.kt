@@ -147,18 +147,30 @@ class SetAlarmPlugin : Plugin {
      * Reads `AlarmClock.Instances.CONTENT_URI`, which is the supported way; it needs
      * no permission but only returns alarms the provider chooses to expose.
      */
+    /**
+     * Alarms the system Clock app will show us, as (minutes since midnight, label).
+     *
+     * `android.provider.AlarmClock.Instances` is @hide, so neither the URI nor the
+     * column names can be referenced at compile time; these are the AOSP DeskClock
+     * values. That provider is also unexported on many devices and on modern Android,
+     * so this is best-effort by nature and returns nothing when it cannot read.
+     *
+     * The only caller uses it to avoid setting a duplicate alarm, so failing empty is
+     * the safe direction: Sarothi sets the alarm rather than skipping one it could not
+     * confirm. Nothing here claims to have listed the user's alarms.
+     */
     private fun existingAlarms(context: android.content.Context): List<Pair<Int, String>> {
         val cursor = runCatching {
             context.contentResolver.query(
-                AlarmClock.Instances.CONTENT_URI,
-                arrayOf(AlarmClock.Instances.HOUR, AlarmClock.Instances.MINUTES, AlarmClock.Instances.MESSAGE),
+                ALARM_INSTANCES_URI,
+                arrayOf(ALARM_COLUMN_HOUR, ALARM_COLUMN_MINUTES, ALARM_COLUMN_MESSAGE),
                 null, null, null,
             )
         }.getOrNull() ?: return emptyList()
         return cursor.use { rows ->
-            val hourColumn = rows.getColumnIndex(AlarmClock.Instances.HOUR)
-            val minuteColumn = rows.getColumnIndex(AlarmClock.Instances.MINUTES)
-            val messageColumn = rows.getColumnIndex(AlarmClock.Instances.MESSAGE)
+            val hourColumn = rows.getColumnIndex(ALARM_COLUMN_HOUR)
+            val minuteColumn = rows.getColumnIndex(ALARM_COLUMN_MINUTES)
+            val messageColumn = rows.getColumnIndex(ALARM_COLUMN_MESSAGE)
             val found = mutableListOf<Pair<Int, String>>()
             while (rows.moveToNext()) {
                 if (hourColumn < 0 || minuteColumn < 0) break
@@ -412,6 +424,13 @@ class ConvertUnitsPlugin : Plugin {
     private companion object {
         private fun bd(value: String) = java.math.BigDecimal(value)
 
+        // AOSP DeskClock's AlarmClock.Instances is @hide; these are its literal values.
+        private val ALARM_INSTANCES_URI =
+            android.net.Uri.parse("content://com.android.deskclock/instances")
+        private const val ALARM_COLUMN_HOUR = "hour"
+        private const val ALARM_COLUMN_MINUTES = "minutes"
+        private const val ALARM_COLUMN_MESSAGE = "message"
+
         val UNITS: Map<String, Unit> = buildMap {
             // length → metres
             listOf("mm" to "0.001", "cm" to "0.01", "m" to "1", "meter" to "1", "metre" to "1",
@@ -454,7 +473,7 @@ class ConvertUnitsPlugin : Plugin {
             }
             // temperature has no linear factor
             listOf("c", "celsius", "°c", "f", "fahrenheit", "°f", "k", "kelvin").forEach { name ->
-                put(name, Unit("temperature", bd(1)))
+                put(name, Unit("temperature", bd("1")))
             }
         }
     }

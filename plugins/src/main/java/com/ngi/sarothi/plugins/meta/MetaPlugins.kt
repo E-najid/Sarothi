@@ -217,7 +217,7 @@ class PluginListPlugin : Plugin {
             .sortedWith(compareBy({ it.category.ordinal }, { it.name }))
 
         val rows = tools.map { plugin ->
-            val availability = runCatching { plugin.availability() }.getOrElse { failure ->
+            val availability = runCatching { plugin.availability(context) }.getOrElse { failure ->
                 PluginAvailability.unavailable("availability check failed: ${failure.message}")
             }
             Triple(plugin, availability, plugin.sensitivity)

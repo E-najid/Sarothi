@@ -786,19 +786,24 @@ class NewsPlugin : Plugin {
         for ((label, feedUrl) in feeds) {
             if (stories.size >= limit) break
             val response = withContext(Dispatchers.IO) { runCatching { context.http.get(feedUrl) } }
-            val result = response.getOrElse { failure ->
-                failures += "$label: ${failure.javaClass.simpleName}"
+            // Not `response.getOrElse { ... continue }`: break and continue are not
+            // allowed inside an inline lambda without an experimental compiler flag,
+            // so the failure is tested explicitly and the loop continues from here.
+            if (response.isFailure) {
+                failures += "$label: ${response.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"}"
                 continue
             }
+            val result = response.getOrThrow()
             if (!result.isSuccess) {
                 failures += "$label: HTTP ${result.statusCode}"
                 continue
             }
-            val parsed = runCatching { parseFeed(result.bodyText(), label, feedUrl) }
-                .getOrElse { failure ->
-                    failures += "$label: ${failure.javaClass.simpleName}"
-                    continue
-                }
+            val parseAttempt = runCatching { parseFeed(result.bodyText(), label, feedUrl) }
+            if (parseAttempt.isFailure) {
+                failures += "$label: ${parseAttempt.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"}"
+                continue
+            }
+            val parsed = parseAttempt.getOrThrow()
             stories += parsed.take(limit - stories.size)
         }
 

@@ -179,7 +179,7 @@ class AddTodoPlugin : Plugin {
 
         val todo = context.stores.todos.create(title, notes, dueAt, priority, listName)
         return PluginResult.Success(
-            summaryForUser = "Added \"${todo.title}\" to ${todo.list}" +
+            summaryForUser = "Added \"${todo.title}\" to ${todo.listName}" +
                 (dueAt?.let { ", due ${formatEpoch(it)}" } ?: ""),
             data = Json.obj {
                 addProperty("id", todo.id)
@@ -258,7 +258,14 @@ class ListTodosPlugin : Plugin {
             addProperty("count", todos.size)
             addProperty("open_count", todos.count { !it.completed })
         }
-        val overdue = todos.count { !it.completed && it.dueAtEpochMillis != null && it.dueAtEpochMillis < System.currentTimeMillis() }
+        // The null check has to land in a local: dueAtEpochMillis is a public property
+        // declared in another module, so Kotlin will not smart-cast it after the check
+        // and the comparison below would see a Long?.
+        val now = System.currentTimeMillis()
+        val overdue = todos.count { todo ->
+            val due = todo.dueAtEpochMillis
+            !todo.completed && due != null && due < now
+        }
         return PluginResult.Success(
             when {
                 todos.isEmpty() -> "No to-dos match that."

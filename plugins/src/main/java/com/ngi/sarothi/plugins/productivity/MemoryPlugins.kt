@@ -90,6 +90,9 @@ class MemorySavePlugin : Plugin {
             context.stores.memories.update(memory.id, null, null, null, true)
         }
 
+        // Hoisted out of the Json.obj {} builder below: that lambda is not inline and
+        // not suspend, so a suspension call cannot appear inside it.
+        val totalMemories = context.stores.memories.count()
         return PluginResult.Success(
             summaryForUser = "Remembered: \"${memory.text}\" (${memory.kind.name.lowercase()}, " +
                 "importance ${memory.importance}/5).",
@@ -100,7 +103,7 @@ class MemorySavePlugin : Plugin {
                 addProperty("importance", memory.importance)
                 addProperty("pinned", memory.pinned)
                 add("tags", Json.arr { memory.tags.forEach { add(it) } })
-                addProperty("total_memories", context.stores.memories.count())
+                addProperty("total_memories", totalMemories)
             },
             spoken = "মনে রাখলাম।",
             undoToken = memory.id,
@@ -160,6 +163,9 @@ class MemorySearchPlugin : Plugin {
             )
         }.filter { kindFilter == null || it.memory.kind == kindFilter }.take(limit)
 
+        // Hoisted out of the Json.obj {} builder below: that lambda is not inline
+        // and not suspend, so a suspension call cannot appear inside it.
+        val totalStored = context.stores.memories.count()
         val data = Json.obj {
             addProperty("query", query)
             add("memories", Json.arr {
@@ -178,7 +184,7 @@ class MemorySearchPlugin : Plugin {
                 }
             })
             addProperty("count", matches.size)
-            addProperty("total_stored", context.stores.memories.count())
+            addProperty("total_stored", totalStored)
         }
         return PluginResult.Success(
             summaryForUser = when {

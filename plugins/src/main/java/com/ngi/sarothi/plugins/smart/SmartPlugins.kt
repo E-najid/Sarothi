@@ -468,6 +468,9 @@ class GeofenceReminderPlugin : Plugin {
         }
         GeofenceWatcherService.sync(context.appContext)
 
+        // Hoisted out of the Json.obj {} builder below: that lambda is not inline and
+        // not suspend, so a suspension call cannot appear inside it.
+        val totalArmed = store.enabled().size
         return PluginResult.Success(
             summaryForUser = "Sarothi will ${if (runAgent) request.lowercase() else "remind you: \"$request\""} " +
                 "when you ${triggerText(trigger)} ${created.label.ifBlank { "that place" }} " +
@@ -484,7 +487,7 @@ class GeofenceReminderPlugin : Plugin {
                 addProperty("run_agent", created.runAgent)
                 addProperty("cooldown_minutes", cooldownMinutes)
                 addProperty("watching", true)
-                addProperty("total_armed", store.enabled().size)
+                addProperty("total_armed", totalArmed)
             },
             spoken = "জায়গায় পৌঁছালে মনে করিয়ে দেব।",
             undoToken = created.id,
@@ -545,15 +548,18 @@ class GeofenceReminderPlugin : Plugin {
         if (!deleted) {
             return PluginResult.Failure("That reminder was already gone.", "NotFoundException", retriable = false)
         }
+        // Once, not twice: the builder below cannot make a suspension call at all, and
+        // calling it again for the summary would race the first result.
+        val stillArmed = store.enabled()
         return PluginResult.Success(
             summaryForUser = "Deleted the reminder for \"${existing.label}\"." +
-                if (store.enabled().isEmpty()) {
+                if (stillArmed.isEmpty()) {
                     " That was the last one, so Sarothi stopped watching your location."
                 } else "",
             data = Json.obj {
                 addProperty("id", existing.id)
                 addProperty("label", existing.label)
-                addProperty("still_armed", store.enabled().size)
+                addProperty("still_armed", stillArmed.size)
             },
             spoken = "রিমাইন্ডারটি মুছে দিয়েছি।",
             undoToken = com.ngi.sarothi.plugins.common.UndoToken.encode(

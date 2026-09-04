@@ -353,7 +353,10 @@ class ListSchedulesPlugin : Plugin {
                         addProperty("last_run_status", task.lastRunStatus ?: "never run")
                         addProperty("last_run_text", whenText(task.lastRunAtEpochMillis))
                         task.lastRunMessage?.let { addProperty("last_run_message", it) }
-                        addProperty("overdue", task.nextRunAtEpochMillis != null && task.nextRunAtEpochMillis < now)
+                        // Same cross-module smart-cast problem as in NotesAndTodosPlugins:
+                        // the property has to be read into a local before the null check.
+                        val nextRun = task.nextRunAtEpochMillis
+                        addProperty("overdue", nextRun != null && nextRun < now)
                     })
                 }
             })

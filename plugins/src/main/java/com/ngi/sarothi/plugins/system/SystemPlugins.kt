@@ -592,19 +592,19 @@ class AppUsagePlugin : Plugin {
                         addProperty("package", packageName)
                         addProperty("app", appLabel(context.appContext, packageName))
                         addProperty("foreground_millis", millis)
-                        addProperty("foreground", Formatting.duration(millis))
+                        addProperty("foreground", Formatting.duration(millis, bangla = false))
                         addProperty("share_percent", if (totalForeground > 0) millis * 100 / totalForeground else 0)
                     })
                 }
             })
             addProperty("days", days)
-            addProperty("total_foreground", Formatting.duration(totalForeground))
+            addProperty("total_foreground", Formatting.duration(totalForeground, bangla = false))
             addProperty("app_count", byPackage.size)
         }
         return PluginResult.Success(
-            summaryForUser = "Over $days day(s): ${Formatting.duration(totalForeground)} in the foreground " +
+            summaryForUser = "Over $days day(s): ${Formatting.duration(totalForeground, bangla = false)} in the foreground " +
                 "across ${byPackage.size} apps. Most used: " +
-                sorted.take(3).joinToString("; ") { "${appLabel(context.appContext, it.key)} ${Formatting.duration(it.value)}" },
+                sorted.take(3).joinToString("; ") { "${appLabel(context.appContext, it.key)} ${Formatting.duration(it.value, bangla = false)}" },
             data = data,
         )
     }

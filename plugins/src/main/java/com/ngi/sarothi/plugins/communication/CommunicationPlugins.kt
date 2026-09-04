@@ -90,6 +90,9 @@ internal suspend fun findContacts(context: Context, query: String, kind: Contact
             )
             val idColumn = rows.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
             val typeColumn = rows.getColumnIndex(ContactsContract.CommonDataKinds.Phone.TYPE)
+            // LABEL is declared on ContactsContract.CommonDataKinds.BaseTypesColumns, so
+            // Phone and Email share the one column name.
+            val labelColumn = rows.getColumnIndex(ContactsContract.CommonDataKinds.Phone.LABEL)
             if (nameColumn < 0 || valueColumn < 0) return@use emptyList()
 
             val matches = mutableListOf<ContactMatch>()
@@ -103,12 +106,18 @@ internal suspend fun findContacts(context: Context, query: String, kind: Contact
                 if (value.isEmpty()) continue
                 val typeLabel = if (typeColumn >= 0 && !rows.isNull(typeColumn)) {
                     val type = rows.getInt(typeColumn)
+                    // getTypeLabel takes three arguments: for TYPE_CUSTOM it returns this
+                    // label, otherwise the standard name for the type. Passing nothing
+                    // would not compile, and passing a blank would render every custom
+                    // type as an empty string.
+                    val customLabel =
+                        if (labelColumn >= 0) rows.getString(labelColumn) ?: "" else ""
                     when (kind) {
                         ContactKind.PHONE -> ContactsContract.CommonDataKinds.Phone.getTypeLabel(
-                            context.resources, type,
+                            context.resources, type, customLabel,
                         ).toString()
                         ContactKind.EMAIL -> ContactsContract.CommonDataKinds.Email.getTypeLabel(
-                            context.resources, type,
+                            context.resources, type, customLabel,
                         ).toString()
                     }
                 } else {
