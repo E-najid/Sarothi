@@ -417,11 +417,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: build
-    # Kept non-blocking only while lint failures are still being worked through, so a
-    # lint rule cannot hide a green build. The Report lint step below makes the failure
-    # impossible to miss either way; flipping this to false is the point once the issue
-    # count reaches zero.
-    continue-on-error: true
+    # Blocking. This was continue-on-error while the four lint errors were being worked
+    # through, on the understanding that it came off once the count reached zero -- it
+    # has. A lint job that fails without failing the run is how a NewApi call that
+    # throws NoSuchMethodError on older Android stays merged, and one of the four that
+    # were fixed here was exactly that.
+    #
+    # The 67 remaining issues are warnings and do not fail the job. If that ever changes,
+    # the Report lint step names every failing check id with file and line.
+    continue-on-error: false
 
     steps:
       - uses: actions/checkout@v4
