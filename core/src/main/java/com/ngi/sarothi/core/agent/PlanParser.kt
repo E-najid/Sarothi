@@ -3,6 +3,7 @@ package com.ngi.sarothi.core.agent
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.ngi.sarothi.core.util.Ids
+import com.ngi.sarothi.core.util.Json
 import com.ngi.sarothi.core.util.JsonReply
 import com.ngi.sarothi.core.util.arrayOrNull
 import com.ngi.sarothi.core.util.objectOrNull
@@ -149,7 +150,7 @@ class PlanParser(private val knownTools: Set<String>) {
             raw == null || raw.isJsonNull -> JsonObject()
             raw.isJsonObject -> raw.asJsonObject
             raw.isJsonPrimitive && raw.asJsonPrimitive.isString -> runCatching {
-                JsonParser.parseString(raw.asString).asJsonObject
+                Json.parseObject(raw.asString)
             }.getOrDefault(JsonObject())
             else -> JsonObject()
         }
