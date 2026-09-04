@@ -94,8 +94,16 @@ fun SettingsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
                             "No fingerprint or face is enrolled in Android's own settings."
                         BiometricKeyVault.Availability.NO_HARDWARE ->
                             "This phone has no biometric hardware Sarothi can use."
+                        BiometricKeyVault.Availability.NO_DEVICE_CREDENTIAL ->
+                            "No lock screen is set up. Android's Keystore will not create a " +
+                                "key that biometrics can protect until the device itself has a " +
+                                "PIN, pattern or password."
+                        // UNKNOWN is the honest fallback: BiometricManager returned something
+                        // this code does not recognise, and core keeps the human-readable
+                        // reason rather than guessing at one here.
                         BiometricKeyVault.Availability.UNKNOWN ->
-                            "Biometric hardware is busy or unavailable right now."
+                            graph.biometrics.statusReason
+                                ?: "Biometric hardware is busy or unavailable right now."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
