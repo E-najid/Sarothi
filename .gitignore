@@ -1,0 +1,24 @@
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# Native dependencies fetched by scripts/setup_native.sh (large, reproducible).
+third_party/
+
+# Never commit secrets, model weights or a user's vault.
+*.gguf
+*.bin
+*.onnx
+models/
+vault/

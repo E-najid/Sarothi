@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sarothi's accessibility service configuration.
+
+  flagRetrieveInteractiveWindows  : read every app window (dialogs, IMEs), not just the focused one
+  flagReportViewIds               : include viewIdResourceName, which the agent uses to name controls
+  flagIncludeNotImportantViews    : keep views the app marked not-important-for-accessibility
+  canPerformGestures            : required for dispatchGesture (coordinate taps, swipes)
+  canRequestFilterKeyEvents     : not requested - Sarothi never intercepts keystrokes
+  typeNotificationStateChanged  : feeds the notification-triggered rules engine
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewFocused|typeViewClicked|typeViewScrolled|typeNotificationStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/sarothi_accessibility_description"
+    android:notificationTimeout="120"
+    android:settingsActivity="com.ngi.sarothi.ui.MainActivity"
+    android:summary="@string/sarothi_accessibility_summary" />
