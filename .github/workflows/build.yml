@@ -255,14 +255,29 @@ jobs:
 
           marker="<!-- sarothi-build-failure -->"
           pr="${{ github.event.pull_request.number }}"
-          existing=$(gh pr view "$pr" --json comments \
-            -q '.comments[] | select(.body | contains("'"$marker"'")) | .url' | tail -1) || existing=""
+
+          # Read the id from the REST endpoint, not from `gh pr view --json comments`.
+          # That command's `.url` field is the *web* URL --
+          #   https://github.com/OWNER/REPO/pull/1#issuecomment-5537051638
+          # -- so stripping to the last path segment yields "1#issuecomment-5537051638"
+          # and the PATCH below 404s. It only shows up from the second run onwards:
+          # with no marker comment yet the step creates one and looks fine, and every
+          # later run then fails to update it, leaving the PR describing an old commit.
+          existing_id=$(gh api --paginate "repos/${{ github.repository }}/issues/$pr/comments" \
+            -q '.[] | select(.body | contains("'"$marker"'")) | .id' 2>> "$gh_err" | tail -1) || existing_id=""
+
+          # Cheap guard that would have caught the bug above: an id that is not a bare
+          # number cannot address a comment, so treat it as "none found" and create one
+          # rather than PATCH a path that 404s.
+          case "$existing_id" in
+            ''|*[!0-9]*) existing_id="" ;;
+          esac
 
           # One comment per PR, updated in place, so a branch that fails ten times does
           # not leave ten walls of text behind.
           post() {
-            if [ -n "$existing" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing##*/}" \
+            if [ -n "$existing_id" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" \
                 -f body="$1" > /dev/null 2>> "$gh_err"
             else
               gh pr comment "$pr" --body "$1" > /dev/null 2>> "$gh_err"
@@ -273,7 +288,7 @@ jobs:
           $(cat failure-report.md)"
 
           if post "$body"; then
-            verb=$([ -n "$existing" ] && echo "updated comment ${existing##*/}" || echo "created a comment")
+            verb=$([ -n "$existing_id" ] && echo "updated comment $existing_id" || echo "created a comment")
             echo "Posted the failure report to PR #$pr ($verb)." >> "$summary"
             echo "::notice::report: $verb on PR #$pr with $(wc -c < failure-report.md) bytes"
           else
