@@ -434,6 +434,8 @@ jobs:
           path: |
             build.log
             failure-report.md
+            */build/test-results/**/*.xml
+            */build/reports/tests/**
           if-no-files-found: ignore
           retention-days: 14
 

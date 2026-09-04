@@ -43,6 +43,10 @@ JAVA_ERROR = re.compile(
     r"^(?P<path>.+?\.java):(?P<line>\d+):\s*error:\s*(?P<msg>.*)$"
 )
 FAILED_TASK = re.compile(r"^>\s+Task\s+(?P<task>:\S+)\s+FAILED\s*$")
+# Gradle's `testLogging { events("failed") }` line for one failing test, followed by
+# the exception indented underneath. Without this the log says only "There were
+# failing tests", and the report below then guesses at a configuration problem.
+TEST_FAILED = re.compile(r"^(?P<cls>[A-Za-z_$][\w$.]*)\s+>\s+(?P<test>.+?)\s+FAILED\s*$")
 WHAT_WENT_WRONG = re.compile(r"^\*\s+What went wrong:")
 GRADLE_FAILURE_BANNER = re.compile(r"^FAILURE:\s+Build (failed|completed with an exception)")
 STACK_FRAME = re.compile(r"^\s+at\s+([\w.$]+\([^)]*\)|[\w.$]+\.[\w<>$]+)")
@@ -87,6 +91,7 @@ def mine(log_text: str) -> dict:
     kotlin_warnings = 0
     java_errors: list[tuple[str, int, str]] = []
     failed_tasks: list[str] = []
+    failed_tests: list[dict] = []
     what_went_wrong: list[str] = []
     caused_by: list[str] = []
     stack_frames: list[str] = []
@@ -101,6 +106,25 @@ def mine(log_text: str) -> dict:
             kotlin_warnings += 1
         elif m := JAVA_ERROR.match(line):
             java_errors.append((shorten(m["path"]), int(m["line"]), m["msg"].strip()))
+        elif m := TEST_FAILED.match(line):
+            # The exception and its message are indented on the lines that follow,
+            # until the next test or the next unindented Gradle section.
+            detail: list[str] = []
+            index += 1
+            while index < len(lines) and len(detail) < 12:
+                current = lines[index]
+                if not current.startswith((" ", "\t")):
+                    break
+                if current.strip():
+                    detail.append(current.strip())
+                elif detail:
+                    break
+                index += 1
+            failed_tests.append({
+                "class": m["cls"],
+                "test": m["test"],
+                "detail": detail,
+            })
         elif m := FAILED_TASK.match(line):
             task = m["task"]
             if task not in failed_tasks:
@@ -134,6 +158,7 @@ def mine(log_text: str) -> dict:
         "kotlin_warnings": kotlin_warnings,
         "java_errors": java_errors,
         "failed_tasks": failed_tasks,
+        "failed_tests": failed_tests,
         "what_went_wrong": what_went_wrong,
         "caused_by": caused_by,
         "stack_frames": stack_frames,
@@ -246,12 +271,37 @@ def _render(report: dict, log_name: str, rows_per_file: int, max_files: int | No
             out.append(f"- `{path}:{line}` — {msg}")
         out.append("")
 
+    ft = report.get("failed_tests") or []
+    if ft:
+        out.append(f"### {len(ft)} test(s) failed")
+        out.append("")
+        out.append("The sources compiled; these assertions did not hold. Each is shown "
+                   "with the message the test itself wrote, because that message is the "
+                   "only part that says what the code was expected to do.")
+        out.append("")
+        for failure in ft[:30]:
+            short_cls = failure["class"].rsplit(".", 1)[-1]
+            out.append(f"- `{short_cls}.{failure['test']}`")
+            if failure["detail"]:
+                out.append("")
+                out.append("  ```")
+                for detail_line in failure["detail"][:6]:
+                    out.append(f"  {detail_line[:400]}")
+                out.append("  ```")
+                out.append("")
+        out.append("")
+
     if not ke and not je:
         out.append("### No compiler errors found in the log")
         out.append("")
-        out.append("The failure is not a Kotlin/Java compile error — it is a "
-                   "configuration, dependency-resolution, SDK or plugin problem. "
-                   "Gradle's own explanation follows.")
+        if ft:
+            out.append("Nothing failed to compile. The build is red because the unit "
+                       "tests above failed, which is a behaviour disagreement rather "
+                       "than a broken build.")
+        else:
+            out.append("The failure is not a Kotlin/Java compile error — it is a "
+                       "configuration, dependency-resolution, SDK or plugin problem. "
+                       "Gradle's own explanation follows.")
         out.append("")
 
     if report["what_went_wrong"]:
@@ -399,6 +449,7 @@ def main(argv: list[str]) -> int:
               f"java_errors={len(report['java_errors'])} "
               f"kotlin_warnings={report['kotlin_warnings']} "
               f"failed_tasks={len(report['failed_tasks'])} "
+              f"failed_tests={len(report['failed_tests'])} "
               f"files={len({p for p, *_ in report['kotlin_errors']})}")
         return 0
 
@@ -412,6 +463,17 @@ def main(argv: list[str]) -> int:
                                  counts=(f"kotlin_errors={len(report['kotlin_errors'])} "
                                          f"java_errors={len(report['java_errors'])} "
                                          f"failed_tasks={report['failed_tasks']}"))
+    # Job logs and artifacts live on blob storage that tooling frequently cannot
+    # reach, while check-run annotations are served by the ordinary REST API. A
+    # failing test that is named in an annotation can therefore be found even when
+    # the HTML report and the raw log both cannot be downloaded.
+    for failure in (report.get("failed_tests") or [])[:10]:
+        first = failure["detail"][0] if failure["detail"] else "no message captured"
+        message = f"test failure: {failure['class']}.{failure['test']} -- {first}"
+        # A newline inside a workflow command terminates it, so the message is
+        # flattened rather than truncated mid-sentence.
+        print("::error::" + " ".join(message.split())[:480])
+
     print(markdown)
     if args.output:
         Path(args.output).write_text(markdown, encoding="utf-8")
