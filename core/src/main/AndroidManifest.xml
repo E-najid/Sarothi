@@ -26,8 +26,18 @@
 
     <!-- scheduling -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      SCHEDULE_EXACT_ALARM only: it is the user-grantable permission, and TaskScheduler
+      already asks canScheduleExactAlarms() and reports alarmIsApproximate when the
+      answer is no, so a reminder that may land a little late says so instead of
+      claiming to be exact.
+
+      USE_EXACT_ALARM is deliberately not requested. It is not grantable by the user, is
+      restricted by Play policy to apps whose core function is an alarm clock or a
+      calendar, and nothing in this codebase reads it. Lint flags it as an error below
+      API 33 on top of that.
+    -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- vault on shared storage, for Android versions without the SAF-only path -->
     <uses-permission

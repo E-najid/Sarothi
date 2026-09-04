@@ -1,5 +1,6 @@
 package com.ngi.sarothi.core.smart
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
@@ -15,6 +17,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.ngi.sarothi.core.R
 import com.ngi.sarothi.core.capability.Notifier
 import com.ngi.sarothi.core.data.TaskTrigger
@@ -105,6 +108,29 @@ class GeofenceWatcherService : Service() {
                 "Geofence watching is paused",
                 "Location is turned off on this phone. Turn it on and Sarothi will start watching " +
                     "${armed.size} place(s) again.",
+            )
+            stopSelf()
+            return
+        }
+
+        // Checked here rather than left to the caller: permissions can be revoked while
+        // this service is running, and requestLocationUpdates throws SecurityException
+        // without one. The runCatching below would swallow that into a generic failure,
+        // which tells the user nothing about what to do. Stopping with a specific
+        // notification is the honest outcome, and it is the shape every other guard in
+        // this method already uses.
+        val locationGranted = listOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ).any {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (!locationGranted) {
+            notifyWarning(
+                "Geofence watching stopped",
+                "Sarothi no longer has permission to read this phone's location, so it cannot tell " +
+                    "when you arrive at one of your ${armed.size} place(s). Allow Location for " +
+                    "Sarothi in Android settings and it will start watching again.",
             )
             stopSelf()
             return

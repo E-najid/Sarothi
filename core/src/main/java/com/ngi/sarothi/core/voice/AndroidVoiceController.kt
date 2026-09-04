@@ -415,6 +415,14 @@ class AndroidVoiceController(
      * @return the samples, or null when the recorder could not be opened.
      */
     private fun record(maxSeconds: Int, onLevel: ((Float) -> Unit)?): FloatArray? {
+        // Checked at the call, not only by whoever started the listen: RECORD_AUDIO can be
+        // revoked mid-session, and AudioRecord's constructor throws SecurityException
+        // without it. Returning null is this function's documented "could not open the
+        // recorder" path, which the caller already turns into a ListenOutcome.Failed.
+        if (!hasRecordPermission()) {
+            Log.w(TAG, "RECORD_AUDIO is not granted, so the recorder cannot be opened")
+            return null
+        }
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
