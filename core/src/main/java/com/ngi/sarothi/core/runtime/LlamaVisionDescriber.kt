@@ -1,12 +1,10 @@
 package com.ngi.sarothi.core.runtime
 
 import android.graphics.Bitmap
-import com.google.gson.JsonObject
-import com.google.gson.JsonSyntaxException
 import com.ngi.sarothi.core.screen.VisionDescriber
 import com.ngi.sarothi.core.screen.VisionDescription
 import com.ngi.sarothi.core.screen.VisionTap
-import com.ngi.sarothi.core.util.Json
+import com.ngi.sarothi.core.util.JsonReply
 import com.ngi.sarothi.core.util.arrayOrNull
 import com.ngi.sarothi.core.util.intOr
 import com.ngi.sarothi.core.util.stringOrNull
@@ -108,7 +106,7 @@ class LlamaVisionDescriber(
         elapsedMillis: Long,
         stopReason: String,
     ): VisionDescription {
-        val json = extractJsonObject(raw)
+        val json = JsonReply.extractObject(raw)
         if (json == null) {
             return VisionDescription(
                 text = raw.trim(),
@@ -153,42 +151,5 @@ class LlamaVisionDescriber(
             elapsedMillis = elapsedMillis,
             stopReason = note,
         )
-    }
-
-    /**
-     * Pulls the first balanced `{...}` out of a reply. Small models wrap JSON in
-     * prose or markdown fences even under a grammar constraint, and rejecting the
-     * whole answer for that would throw away a usable grounding.
-     */
-    private fun extractJsonObject(raw: String): JsonObject? {
-        val start = raw.indexOf('{')
-        if (start < 0) return null
-        var depth = 0
-        var inString = false
-        var escaped = false
-        for (index in start until raw.length) {
-            val char = raw[index]
-            when {
-                escaped -> escaped = false
-                char == '\\' && inString -> escaped = true
-                char == '"' -> inString = !inString
-                inString -> Unit
-                char == '{' -> depth++
-                char == '}' -> {
-                    depth--
-                    if (depth == 0) {
-                        val candidate = raw.substring(start, index + 1)
-                        return try {
-                            Json.parseObject(candidate)
-                        } catch (_: JsonSyntaxException) {
-                            null
-                        } catch (_: IllegalStateException) {
-                            null
-                        }
-                    }
-                }
-            }
-        }
-        return null
     }
 }

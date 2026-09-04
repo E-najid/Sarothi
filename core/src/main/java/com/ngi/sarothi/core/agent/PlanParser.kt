@@ -1,9 +1,9 @@
 package com.ngi.sarothi.core.agent
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
-import com.google.gson.JsonSyntaxException
 import com.ngi.sarothi.core.util.Ids
+import com.ngi.sarothi.core.util.JsonReply
 import com.ngi.sarothi.core.util.arrayOrNull
 import com.ngi.sarothi.core.util.objectOrNull
 import com.ngi.sarothi.core.util.stringOrNull
@@ -20,7 +20,7 @@ import com.ngi.sarothi.core.util.stringOrNull
 class PlanParser(private val knownTools: Set<String>) {
 
     fun parse(raw: String): PlanParseOutcome {
-        val json = extractJsonObject(raw)
+        val json = JsonReply.extractElement(raw)?.let(::asDecisionObject)
             ?: return PlanParseOutcome.Unparseable(
                 raw = raw,
                 reason = "The model's reply contained no JSON object. Sarothi will not act on " +
@@ -156,104 +156,23 @@ class PlanParser(private val knownTools: Set<String>) {
     }
 
     /**
-     * Extracts the first balanced `{...}` from a reply.
+     * Reads the extracted JSON as a decision object.
      *
-     * Handles markdown fences, leading prose and trailing commentary. Tries the
-     * raw slice first and, if that fails, retries once with trailing commas
-     * removed — the single most common small-model JSON error, and one whose fix
-     * cannot change meaning.
+     * A bare array of step objects is what a small model emits when it answers "list
+     * the steps" literally. Treating it as a plan invents nothing -- every tool and
+     * every argument in it still came from the model -- whereas ignoring it loses the
+     * whole task: the array's first element on its own has no kind and no steps, so it
+     * used to parse as an ANSWER carrying no text, and the agent had nothing to say.
      */
-    internal fun extractJsonObject(raw: String): JsonObject? {
-        val cleaned = stripFences(raw)
-        val candidates = balancedObjects(cleaned)
-        for (candidate in candidates) {
-            parseOrNull(candidate)?.let { return it }
-            parseOrNull(removeTrailingCommas(candidate))?.let { return it }
+    private fun asDecisionObject(element: JsonElement): JsonObject? = when {
+        element.isJsonObject -> element.asJsonObject
+        element.isJsonArray && element.asJsonArray.size() > 0 &&
+            element.asJsonArray.all { it.isJsonObject } -> JsonObject().apply {
+            addProperty("kind", "plan")
+            add("steps", element.asJsonArray)
         }
-        return null
-    }
-
-    private fun parseOrNull(text: String): JsonObject? = try {
-        val element = JsonParser.parseString(text)
-        if (element.isJsonObject) element.asJsonObject else null
-    } catch (_: JsonSyntaxException) {
-        null
-    } catch (_: IllegalStateException) {
-        null
-    }
-
-    private fun stripFences(raw: String): String {
-        val trimmed = raw.trim()
-        if (!trimmed.startsWith("```")) return trimmed
-        val withoutOpen = trimmed.removePrefix("```")
-        val afterLanguage = withoutOpen.indexOf('\n').let { if (it < 0) withoutOpen else withoutOpen.substring(it + 1) }
-        return afterLanguage.substringBeforeLast("```").trim()
-    }
-
-    /** All top-level balanced objects, outermost first at each start position. */
-    private fun balancedObjects(text: String): List<String> {
-        val found = mutableListOf<String>()
-        var index = 0
-        while (index < text.length) {
-            if (text[index] != '{') {
-                index++
-                continue
-            }
-            var depth = 0
-            var inString = false
-            var escaped = false
-            var end = -1
-            for (position in index until text.length) {
-                val char = text[position]
-                when {
-                    escaped -> escaped = false
-                    char == '\\' && inString -> escaped = true
-                    char == '"' -> inString = !inString
-                    inString -> Unit
-                    char == '{' -> depth++
-                    char == '}' -> {
-                        depth--
-                        if (depth == 0) {
-                            end = position
-                            break
-                        }
-                    }
-                }
-            }
-            if (end < 0) break
-            found += text.substring(index, end + 1)
-            index = end + 1
-        }
-        return found
-    }
-
-    private fun removeTrailingCommas(text: String): String {
-        val out = StringBuilder(text.length)
-        var inString = false
-        var escaped = false
-        for (position in text.indices) {
-            val char = text[position]
-            if (escaped) {
-                out.append(char)
-                escaped = false
-                continue
-            }
-            if (char == '\\' && inString) {
-                out.append(char)
-                escaped = true
-                continue
-            }
-            if (char == '"') {
-                inString = !inString
-                out.append(char)
-                continue
-            }
-            if (char == ',' && !inString) {
-                val next = text.substring(position + 1).trimStart().firstOrNull()
-                if (next == '}' || next == ']') continue
-            }
-            out.append(char)
-        }
-        return out.toString()
+        // An array of primitives, a bare string, a number: nothing here describes a
+        // decision, and guessing one is what this parser exists to avoid.
+        else -> null
     }
 }
