@@ -323,6 +323,14 @@ class GeofenceReminderPlugin : Plugin {
     override val category = PluginCategory.SMART_HOME
     override val sensitivity = Sensitivity.NORMAL
     override val supportsUndo = true
+    /**
+     * ACCESS_BACKGROUND_LOCATION is API 29 and this app's minSdk is 26, which is what
+     * lint's InlinedApi is pointing at. Listing it is still correct: below API 29 there is
+     * no separate background grant to ask for, because ACCESS_FINE_LOCATION already covers
+     * background use, and PermissionGuard.granted() treats a permission this device has no
+     * concept of as granted rather than missing. Without that, this plugin would report
+     * itself permanently unavailable on every Android 8 and 9 phone.
+     */
     override val requiredPermissions = listOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_BACKGROUND_LOCATION,

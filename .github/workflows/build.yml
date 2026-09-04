@@ -417,6 +417,22 @@ jobs:
           ls -la dist/ || true
           echo "apk_found=$found" >> "$GITHUB_OUTPUT"
 
+          # Job logs and artifact blobs live on storage that tooling frequently cannot
+          # reach, while check-run annotations are served by the ordinary REST API. So
+          # name every output here, with its size: this is the only place a reader can
+          # confirm an APK was really produced rather than trusting the summary table.
+          if [ -d dist ] && [ -n "$(ls -A dist 2>/dev/null)" ]; then
+            while IFS= read -r line; do
+              echo "::notice::build output: $line"
+            done < <(find dist -type f -printf '%p (%s bytes)\n' | sort)
+          else
+            echo "::warning::the build produced no outputs at all -- dist/ is empty"
+          fi
+
+          if [ "$found" != "1" ] && [ -f app/build.gradle.kts ]; then
+            echo "::error::app/build.gradle.kts exists and :app was assembled, but no APK was found under app/build/outputs/apk"
+          fi
+
       - name: Build summary
         if: always()
         run: |
@@ -427,10 +443,15 @@ jobs:
             echo "|---|---|"
             echo "| Native runtime | \`${{ steps.variant.outputs.native }}\` |"
             echo "| Gradle targets | \`${{ steps.modules.outputs.targets }}\` |"
-            if [ "${{ steps.modules.outputs.app_present }}" = "true" ]; then
-              echo "| APK | built |"
+            # Three states, not two. "app_present" alone is not evidence an APK was
+            # produced: :app could assemble and yield nothing, and a summary that says
+            # "built" either way is the kind of claim this workflow exists to avoid.
+            if [ "${{ steps.outputs.outputs.apk_found }}" = "1" ]; then
+              echo "| APK | **built** — see the \`build output:\` annotations for names and sizes |"
+            elif [ "${{ steps.modules.outputs.app_present }}" = "true" ]; then
+              echo "| APK | **not produced** — :app was assembled but no APK was found |"
             else
-              echo "| APK | **not produced** — \`app/build.gradle.kts\` does not exist yet |"
+              echo "| APK | **not produced** — \`app/build.gradle.kts\` does not exist |"
             fi
             echo ""
             echo "### What was compiled"
