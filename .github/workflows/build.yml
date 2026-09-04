@@ -218,6 +218,11 @@ jobs:
         # from the step above, and a second failure here would only add noise. What
         # matters is that the PR never ends up describing an older commit, because a
         # stale comment reads exactly like a current one.
+        #
+        # Every decision point also emits a workflow-command annotation. Job logs and
+        # artifacts live on blob storage that tooling frequently cannot reach, while
+        # check-run annotations are served by the ordinary REST API -- so this is the
+        # one diagnostic channel that survives when everything else is unreadable.
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -225,22 +230,26 @@ jobs:
           set -uo pipefail
           summary="$GITHUB_STEP_SUMMARY"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh_err=$(mktemp)
 
           if [ ! -f build.log ]; then
             echo "No build.log captured; the failure happened before Gradle ran." | tee -a "$summary"
+            echo "::error::report: no build.log, so nothing was mined and no comment was posted"
             exit 0
           fi
 
           if ! python3 scripts/report_build_failure.py build.log \
                  -o failure-report.md \
                  --head-sha "${{ github.sha }}" \
-                 --run-url "$run_url"; then
+                 --run-url "$run_url" 2> >(tee "$gh_err" >&2); then
             echo "report_build_failure.py failed; the raw log is in the build-log artifact." | tee -a "$summary"
+            echo "::error::report: report_build_failure.py exited non-zero -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
             exit 0
           fi
           cat failure-report.md >> "$summary"
 
           if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "::notice::report: $(wc -c < failure-report.md) bytes written to the step summary; no PR comment on a ${{ github.event_name }} event"
             exit 0
           fi
 
@@ -254,9 +263,9 @@ jobs:
           post() {
             if [ -n "$existing" ]; then
               gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing##*/}" \
-                -f body="$1" > /dev/null
+                -f body="$1" > /dev/null 2>> "$gh_err"
             else
-              gh pr comment "$pr" --body "$1" > /dev/null
+              gh pr comment "$pr" --body "$1" > /dev/null 2>> "$gh_err"
             fi
           }
 
@@ -264,13 +273,16 @@ jobs:
           $(cat failure-report.md)"
 
           if post "$body"; then
-            echo "Posted the failure report to PR #$pr." >> "$summary"
+            verb=$([ -n "$existing" ] && echo "updated comment ${existing##*/}" || echo "created a comment")
+            echo "Posted the failure report to PR #$pr ($verb)." >> "$summary"
+            echo "::notice::report: $verb on PR #$pr with $(wc -c < failure-report.md) bytes"
           else
             # The full report can still be rejected -- body too long, rate limit, a
             # transient API error. Fall back to something small enough to always land,
             # because leaving the previous comment in place is the worst outcome: it
             # would keep reporting an older commit's errors as though they were current.
             # Written as a heredoc with no backticks, so nothing here needs escaping.
+            echo "::error::report: posting $(wc -c < failure-report.md) bytes to PR #$pr failed -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
             short=$(cat <<EOF
           $marker
           ## Build failure
@@ -282,12 +294,16 @@ jobs:
           $run_url and the build-log artifact attached to that run.
           EOF
           )
+            : > "$gh_err"
             if post "$short"; then
               echo "Full report was rejected; posted a short pointer comment instead." >> "$summary"
+              echo "::warning::report: fell back to a short placeholder comment on PR #$pr"
             else
               echo "Could not comment on PR #$pr at all." >> "$summary"
+              echo "::error::report: even the placeholder comment failed -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
             fi
           fi
+          rm -f "$gh_err"
           exit 0
 
       - name: Upload failure log

@@ -310,6 +310,44 @@ def render(report: dict, log_name: str, max_chars: int = COMMENT_BUDGET,
     return text[:max_chars] + "\n\n_Truncated._"
 
 
+INTERESTING = re.compile(r"^(?:e:|w:|\* What went wrong|\* Where|> Task|FAILURE:|Caused by:|.*error:)",
+                         re.IGNORECASE)
+
+
+def _crash_report(log_name: str, text: str, crash: str, head_sha: str | None,
+                  run_url: str | None, counts: str | None = None) -> str:
+    """A report about the reporter, for when mining or rendering threw.
+
+    Carries the traceback and the log lines most likely to explain the failure, so the
+    PR still gets actionable content and the bug in this script is visible rather than
+    hiding behind a comment that stopped updating.
+    """
+    out = ["## Build failure", "",
+           f"_`report_build_failure.py` crashed while mining `{log_name}`, so this is a "
+           f"raw fallback rather than the usual digest._", ""]
+    if head_sha:
+        out += [f"Commit `{head_sha[:10]}`.", ""]
+    if run_url:
+        out += [f"[Job log for this run]({run_url})", ""]
+    if counts:
+        out += [f"Mined before the crash: {counts}", ""]
+
+    out += ["### Traceback", "", "```", *crash.rstrip().split("\n")[-40:], "```", ""]
+
+    lines = text.split("\n")
+    picked = [ln for ln in lines if INTERESTING.match(ln.strip())]
+    out += [f"### Compiler / Gradle lines from the log ({len(picked)} matched)", ""]
+    if picked:
+        out += ["```", *picked[:120], "```"]
+        if len(picked) > 120:
+            out += [f"… {len(picked) - 120} more matched lines omitted."]
+    else:
+        out += ["```", *lines[-60:], "```", "", "_No `e:`/`FAILURE:` lines matched; the tail "
+                "of the log is shown instead._"]
+    out.append("")
+    return "\n".join(out)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -338,7 +376,23 @@ def main(argv: list[str]) -> int:
         print(f"report_build_failure: could not read {path}: {exc}", file=sys.stderr)
         return 0
 
-    report = mine(text)
+    # The whole point of this script is that a broken build still produces a readable
+    # report, so the script itself must never be the thing that goes quiet. If mining
+    # raises, emit what we have -- including the traceback -- rather than dying and
+    # leaving the PR comment describing an older commit. That already happened once:
+    # the miner threw on a log shape it had not seen, the reporting step swallowed it,
+    # and the only evidence was a comment that had silently stopped updating.
+    try:
+        report = mine(text)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        crash = traceback.format_exc(limit=12)
+        raw = _crash_report(path.name, text, crash, args.head_sha, args.run_url)
+        print(raw)
+        if args.output:
+            Path(args.output).write_text(raw, encoding="utf-8")
+        return 0
 
     if args.stats:
         print(f"kotlin_errors={len(report['kotlin_errors'])} "
@@ -348,7 +402,16 @@ def main(argv: list[str]) -> int:
               f"files={len({p for p, *_ in report['kotlin_errors']})}")
         return 0
 
-    markdown = render(report, path.name, head_sha=args.head_sha, run_url=args.run_url)
+    try:
+        markdown = render(report, path.name, head_sha=args.head_sha, run_url=args.run_url)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        markdown = _crash_report(path.name, text, traceback.format_exc(limit=12),
+                                 args.head_sha, args.run_url,
+                                 counts=(f"kotlin_errors={len(report['kotlin_errors'])} "
+                                         f"java_errors={len(report['java_errors'])} "
+                                         f"failed_tasks={report['failed_tasks']}"))
     print(markdown)
     if args.output:
         Path(args.output).write_text(markdown, encoding="utf-8")
