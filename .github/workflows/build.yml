@@ -230,6 +230,11 @@ jobs:
           set -uo pipefail
           summary="$GITHUB_STEP_SUMMARY"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # On a pull_request event github.sha is the synthetic merge commit GitHub
+          # builds to test the PR. It is not on the branch, so a reader who copies it out
+          # of the report finds nothing. Stamp the head commit instead.
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          [ -n "$head_sha" ] || head_sha="${{ github.sha }}"
           gh_err=$(mktemp)
 
           if [ ! -f build.log ]; then
@@ -240,7 +245,7 @@ jobs:
 
           if ! python3 scripts/report_build_failure.py build.log \
                  -o failure-report.md \
-                 --head-sha "${{ github.sha }}" \
+                 --head-sha "$head_sha" \
                  --run-url "$run_url" 2> >(tee "$gh_err" >&2); then
             echo "report_build_failure.py failed; the raw log is in the build-log artifact." | tee -a "$summary"
             echo "::error::report: report_build_failure.py exited non-zero -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
@@ -302,7 +307,7 @@ jobs:
           $marker
           ## Build failure
 
-          Commit ${{ github.sha }} failed to build.
+          Commit ${head_sha} failed to build.
 
           This is a placeholder, not the real report: GitHub rejected the full text, so
           nothing here describes an older commit by mistake. See the job log at
@@ -334,6 +339,12 @@ jobs:
           set -uo pipefail
           marker="<!-- sarothi-build-failure -->"
           pr="${{ github.event.pull_request.number }}"
+          # On a pull_request event github.sha is the synthetic merge commit GitHub
+          # builds to test the PR. It is the right thing to attach annotations to and
+          # the wrong thing to print: it is not on the branch, so a reader who copies
+          # it gets nothing. The comment names the head commit instead.
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          [ -n "$head_sha" ] || head_sha="${{ github.sha }}"
 
           id=$(gh api --paginate "repos/${{ github.repository }}/issues/$pr/comments" \
             -q '.[] | select(.body | contains("'"$marker"'")) | .id' 2> /dev/null | tail -1) || id=""
@@ -345,7 +356,7 @@ jobs:
           $marker
           ## Build passing
 
-          Commit ${{ github.sha }} compiles, passes its unit tests and clears lint.
+          Commit ${head_sha} compiles, passes its unit tests and clears lint.
 
           The failure report that was here described an earlier commit. It has been
           replaced rather than left in place, so this comment cannot disagree with the

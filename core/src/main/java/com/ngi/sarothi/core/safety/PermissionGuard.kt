@@ -1,6 +1,7 @@
 package com.ngi.sarothi.core.safety
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
@@ -59,8 +60,48 @@ class PermissionGuard(private val context: Context) {
     /** Runtime permissions the plugin declares that are not currently granted. */
     fun missingRuntime(permissions: List<String>): List<String> = permissions.filterNot { granted(it) }
 
+    /**
+     * Permissions that post-date minSdk 26, and the API level each arrives at.
+     *
+     * Below that level the platform has no such permission at all, so
+     * `checkSelfPermission` answers DENIED -- not "the user refused", but "this device
+     * has no concept of the question". There is nothing to enforce and nothing to ask
+     * for:
+     *
+     *  - FOREGROUND_SERVICE (28) is a normal permission; before 28 any app could start
+     *    a foreground service without declaring one.
+     *  - USE_BIOMETRIC (28) is normal too; USE_FINGERPRINT was the equivalent before it.
+     *  - ACCESS_BACKGROUND_LOCATION (29) matters most here. Before 29,
+     *    ACCESS_FINE_LOCATION already covered background use, which is exactly why there
+     *    is no separate grant. Treating it as missing made `geofence_reminder`
+     *    permanently unavailable on every Android 8 and 9 phone -- the older, low-RAM
+     *    devices this app is built for.
+     *  - POST_NOTIFICATIONS (33): before 33 notifications needed no runtime permission.
+     *
+     * InlinedApi is suppressed on the table because naming permissions newer than minSdk
+     * *is* the table's purpose; it maps each to an Int and calls no API.
+     */
+    @SuppressLint("InlinedApi")
+    private val permissionMinApi = mapOf(
+        Manifest.permission.FOREGROUND_SERVICE to 28,
+        Manifest.permission.USE_BIOMETRIC to 28,
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION to 29,
+        Manifest.permission.POST_NOTIFICATIONS to 33,
+    )
+
+    private fun appliesOnThisDevice(permission: String): Boolean =
+        Build.VERSION.SDK_INT >= (permissionMinApi[permission] ?: 0)
+
+    /**
+     * True when the platform will let this app use [permission].
+     *
+     * A permission this device has no concept of counts as granted, so every caller --
+     * the plugin pipeline, the permission screen, a plugin's own pre-flight check --
+     * gets the same answer instead of each having to know which permissions are new.
+     */
     fun granted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        !appliesOnThisDevice(permission) ||
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     /** Verdict for a plugin, combining runtime permissions and special access. */
     fun verdictFor(plugin: Plugin): PermissionVerdict {

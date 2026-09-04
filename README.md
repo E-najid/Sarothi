@@ -284,17 +284,22 @@ Where a capability cannot really be delivered, it says so instead of faking it:
 
 The following is still outstanding:
 
-1. ~~**`:app` module**~~ — **written.** `build.gradle.kts` (application plugin, Compose,
-   `applicationId com.ngi.sarothi`), `AndroidManifest.xml` (Application + single launcher
-   Activity; every permission and service stays in `:core`'s manifest and merges in),
-   `strings.xml` / `themes.xml` (light + night), `SarothiApplication`, `di/AppGraph.kt`
-   wiring every `:core` constructor and publishing all four registry seams,
-   `notify/AndroidNotifier.kt`, `di/LlamaTextModelClient.kt` (the one `TextModelClient`
-   implementation), `di/PersonaRepository.kt`, and the Compose screens: task + live
-   checklist with the question and confirmation dialogs, vault pick/create/restore/lock,
-   and models with download progress.
-   Still to write: the persona editor, task history and log viewers, the schedule editor,
-   the permission walkthrough, and the accessibility-service prompt.
+1. ~~**`:app` module**~~ — **written and building.** `build.gradle.kts` (application
+   plugin, Compose, `applicationId com.ngi.sarothi`, `en`/`bn` resource configs),
+   `AndroidManifest.xml` (Application + single launcher Activity; every permission and
+   service stays in `:core`'s manifest and merges in), `strings.xml` / `themes.xml`
+   (light + night), `SarothiApplication`, `di/AppGraph.kt` wiring every `:core`
+   constructor and publishing all four registry seams, `notify/AndroidNotifier.kt`,
+   `di/LlamaTextModelClient.kt` (the one `TextModelClient` implementation),
+   `di/PersonaRepository.kt`, and seven Compose screens: task with the live checklist,
+   question and confirmation dialogs; vault pick / create / restore / lock / detach;
+   models with integrity state and resumable downloads; persona editor; task history;
+   audit log; and access (special-access settings screens, per-plugin verdicts, and the
+   accessibility-service prompt that decides whether Sarothi can see the screen).
+   Still to write: the schedule and notification-rule editors (the agent's `schedule_task`
+   plugin creates them today; there is no screen to edit one by hand), per-plugin config
+   screens for the connectors, a biometric-unlock convenience path, and the
+   "download over mobile data" toggle that `ModelDownloadRegistry` already has a slot for.
 
 
 2. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng `1.52.0` and
