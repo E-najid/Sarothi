@@ -16,7 +16,14 @@ val nativeSourcesReady: Boolean = !skipNative && thirdPartyDir.isDirectory &&
 android {
     namespace = "com.ngi.sarothi.core"
     compileSdk = 35
-    ndkVersion = "27.0.12077973"
+
+    // Only pinned when there is something for the NDK to compile. AGP resolves
+    // `ndkVersion` eagerly: setting it unconditionally makes a Kotlin-only build
+    // fail on any machine (CI runners included) that does not already have this
+    // exact NDK installed, even though no native code would be built.
+    if (nativeSourcesReady) {
+        ndkVersion = "27.0.12077973"
+    }
 
     defaultConfig {
         minSdk = 26

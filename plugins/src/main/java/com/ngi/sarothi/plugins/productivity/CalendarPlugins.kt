@@ -15,7 +15,7 @@ import com.ngi.sarothi.core.plugin.PluginContext
 import com.ngi.sarothi.core.plugin.PluginResult
 import com.ngi.sarothi.core.plugin.Sensitivity
 import com.ngi.sarothi.core.plugin.pluginContext
-import com.ngi.sarothi.core.safety.ConfirmationPreview
+import com.ngi.sarothi.core.plugin.ConfirmationPreview
 import com.ngi.sarothi.core.safety.ConfirmationReason
 import com.ngi.sarothi.core.util.Json
 import com.ngi.sarothi.core.util.stringOrNull

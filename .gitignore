@@ -22,3 +22,7 @@ third_party/
 *.onnx
 models/
 vault/
+
+# Python
+__pycache__/
+*.pyc

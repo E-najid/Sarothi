@@ -28,30 +28,96 @@ bridge to llama.cpp / whisper.cpp / espeak-ng.
 | `:core` — crypto, vault, agent, plugins, screen, voice, models, safety, scheduling | ✅ Implemented |
 | `:plugins` — 78 plugins across 9 categories | ✅ Implemented |
 | `core/src/main/cpp` — JNI bridge (llama.cpp, whisper.cpp, espeak-ng) | ✅ Implemented |
+| `.github/workflows/build.yml` — CI | ✅ Implemented |
 | `:app` — Compose UI, DI graph, manifest | ❌ **Not yet written** |
 | Gradle wrapper (`gradlew`, `gradle-wrapper.jar`) | ❌ Not committed (binary) |
-| `docs/`, `scripts/setup_native.sh` | ❌ Not yet written |
+| `scripts/build_espeak_ng.sh`, `docs/` | ❌ Not yet written |
 
-**The project does not build yet.** `settings.gradle.kts` declares `:app`, but
+**The project does not build an APK yet.** `settings.gradle.kts` declares `:app`, but
 that module has only its launcher icons — no `build.gradle.kts`, no manifest, no
-Kotlin. See [What is missing](#what-is-missing) below. Nothing in this repo
-pretends otherwise: unimplemented capabilities throw or report themselves
-unavailable at runtime rather than returning fake results.
+Kotlin. The two library modules do compile on their own, and CI builds them; see
+[Continuous integration](#continuous-integration). Nothing in this repo pretends
+otherwise: unimplemented capabilities throw or report themselves unavailable at
+runtime rather than returning fake results.
+
+## Continuous integration
+
+`.github/workflows/build.yml` runs four jobs:
+
+| Job | What it does | Blocking |
+|---|---|---|
+| `verify` | Argon2id vs RFC 9106, delimiter balance, build audit, model-catalogue self-consistency. No JDK or Android SDK. | ✅ |
+| `build` | `:core:assembleDebug :plugins:assembleDebug` on Gradle 8.11.1 / JDK 17. **Automatically adds `:app:assembleDebug` the moment `app/build.gradle.kts` exists** — no workflow edit needed. | ✅ |
+| `lint` | Android lint on the library modules. | ⚠️ non-blocking, but a *separate visible check*, not a swallowed `continue-on-error` step |
+| `gradle-wrapper` | Regenerates the uncommitted wrapper and publishes it as an artifact. | — |
+
+Two things shape the workflow and are worth knowing before you run it:
+
+- **There is no `./gradlew`.** The wrapper jar is a binary blob and was never
+  committed, so `gradle/actions/setup-gradle` supplies Gradle directly, pinned to
+  the same 8.11.1 as `gradle-wrapper.properties`. Dispatch the `gradle-wrapper`
+  job once, commit the four artifact files, and CI can switch to `./gradlew`.
+- **No APK until `:app` lands.** Gradle tolerates an included project with no build
+  script, so `:core` and `:plugins` assemble fine and the APK step reports itself
+  skipped in the job summary rather than silently passing.
+
+The native runtime is opt-in: dispatch with `native=true` (or push a tag) to clone
+the pinned llama.cpp/whisper.cpp and compile the JNI bridge for both ABIs. The
+default path is Kotlin-only, in which `NativeBridge` reports the model runtimes
+unavailable — a real code path, not a stub.
+
+A weekly `schedule` trigger re-checks the model catalogue against the Hugging Face
+API (metadata only, nothing downloaded), because the pinned files could be replaced
+or removed upstream without a single commit here.
 
 ### What is verified
 
-`scripts/verify_argon2_rfc9106.py` runs the Argon2id implementation in
-`core/…/crypto/Argon2.kt` against the official RFC 9106 test vectors — **14/14
-pass**, including the final tag
-`0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659`. This is the
-key-derivation function the vault's encryption depends on, so it is the one piece
-of cryptography that can be proven correct without an Android device.
+Four scripts run in CI on every push. All of them exit non-zero on failure — a
+check that cannot fail is not a check.
 
-`scripts/check_kotlin_braces.py` reports 0 unbalanced delimiter files across all
-117 Kotlin sources. This is a structural check, **not** a compile — no JDK or
-Android SDK was available in the environment where this code was written, so
-`:core` and `:plugins` have never been through `kotlinc`. Expect to fix
-signature-level errors on first build.
+| Script | What it proves | Result |
+|---|---|---|
+| `verify_argon2_rfc9106.py` | Argon2id in `core/…/crypto/Argon2.kt` against the official RFC 9106 vectors | **14/14 pass**, final tag `0d640df5…e659` |
+| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists | **0 errors**, 3 known-gap warnings |
+| `verify_model_catalog.py --offline` | All 9 catalogue pins are well-formed, uniquely keyed, and locatable upstream | **OK** |
+| `check_kotlin_braces.py` | Delimiter balance across all 117 Kotlin sources | **0 unbalanced** |
+
+Argon2id is the one piece of cryptography provable without a device, which matters
+because the whole vault rests on it: two independent salts derive the AES key and
+the verifier hash, so a password can be confirmed without exposing the key.
+
+`audit_build.py` exists because `android.nonTransitiveRClass=true` makes resource
+references a per-module contract that is easy to break silently, and because it
+found four real defects in this codebase (see below).
+
+**Not verified: compilation.** No JDK or Android SDK was available where this code
+was written and there was no network egress for Gradle, so `:core` and `:plugins`
+have never been through `kotlinc`. The checks above are structural and semantic at
+the reference level — they are not a type checker. The first real build may still
+surface signature-level errors.
+
+### Defects found and fixed by the audit
+
+These were all live in the tree and would have failed a build:
+
+1. **`ConfirmationPreview` imported from the wrong package in 9 plugin files.**
+   It is declared in `core.plugin` (Plugin.kt) but `:plugins` imported it from
+   `core.safety`. Unresolved reference × 9.
+2. **`R.drawable.ic_sarothi_status` referenced by `:core` with no drawable in
+   `:core`.** Used by `ModelDownloadService` and `GeofenceWatcherService` for
+   their foreground notifications. The icon existed only in `:app`, which
+   `nonTransitiveRClass=true` makes invisible to `:core` — and `:core` cannot
+   depend on `:app` anyway. Added `core/src/main/res/drawable/ic_sarothi_status.xml`.
+3. **`ndkVersion` pinned unconditionally in `core/build.gradle.kts`.** AGP resolves
+   it eagerly, so a Kotlin-only build would fail on any machine without that exact
+   NDK installed — including CI runners — even with no native code to compile. Now
+   set only when `third_party/` is present.
+4. **`settings.gradle.kts` includes `:app`, which has no build script.** Not a
+   configuration failure (Gradle tolerates it), but it means no APK. Left as-is and
+   reported as a warning, since fixing it means writing the module.
+
+Also missing and now written: `scripts/setup_native.sh` (referenced by 9 committed
+files) and `scripts/verify_model_catalog.py` (referenced by `ModelCatalog.kt`).
 
 ---
 
@@ -216,7 +282,7 @@ Where a capability cannot really be delivered, it says so instead of faking it:
 
 ## What is missing
 
-To make this build and run, the following still has to be written:
+To make this build an APK and run, the following still has to be written:
 
 1. **`:app` module** — `build.gradle.kts`, `AndroidManifest.xml`, resources
    (strings/themes), `SarothiApplication`, the DI graph wiring every `:core`
@@ -224,15 +290,17 @@ To make this build and run, the following still has to be written:
    chat/task with live checklist, models, plugins, permissions, safety, history,
    schedules, persona. Plus the `Notifier` and `TextModelClient` implementations
    that `:core` declares as interfaces for `:app` to provide.
-2. **`scripts/setup_native.sh`** — clones llama.cpp `v0.3.0` and whisper.cpp
-   `b4938` into `third_party/`. `core/build.gradle.kts` already skips CMake when
-   `third_party/` is absent, so Kotlin-only builds work without it.
-3. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng and installs
-   `espeak-ng-data` into `core/src/main/assets/`.
-4. **Gradle wrapper** — `gradle wrapper --gradle-version 8.11.1` (the jar is
-   binary and was not committed).
-5. **`docs/`** — build instructions, vault/SD-card portability guide, threat
-   model.
+2. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng `1.52.0` and
+   installs `espeak-ng-data` into `core/src/main/assets/`. Only needed for Piper
+   TTS; without it `EspeakPhonemizer.availability()` returns `NO_NATIVE_LIBRARY`
+   and `AndroidVoiceController` falls back to the Android system voice, which is a
+   real working path. `setup_native.sh --with-espeak` fails with an explicit
+   message until this exists rather than pretending to work.
+3. **Gradle wrapper** — dispatch the `gradle-wrapper` CI job and commit the four
+   artifact files, or run `gradle wrapper --gradle-version 8.11.1` locally.
+4. **`docs/`** — build instructions, vault/SD-card portability guide, threat model.
+5. **`LICENSE`** — the project is intended to be open source but no licence file
+   has been chosen or added yet.
 
 The DI graph is the substantial piece: every `:core` class is constructor-injected
 with no DI framework, so `:app` has to build the object graph by hand and publish
