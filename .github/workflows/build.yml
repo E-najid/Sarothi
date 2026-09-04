@@ -321,6 +321,46 @@ jobs:
           rm -f "$gh_err"
           exit 0
 
+      - name: Clear stale failure report
+        # The mirror image of the problem Report failure exists to solve. Once the build
+        # passes, that step is skipped, so the comment describing an earlier failure
+        # stays on the PR indefinitely and reads as the current state of a green branch.
+        # It is replaced rather than deleted: keeping the marker preserves the
+        # one-comment-per-PR invariant, so the next failure updates this same comment.
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          marker="<!-- sarothi-build-failure -->"
+          pr="${{ github.event.pull_request.number }}"
+
+          id=$(gh api --paginate "repos/${{ github.repository }}/issues/$pr/comments" \
+            -q '.[] | select(.body | contains("'"$marker"'")) | .id' 2> /dev/null | tail -1) || id=""
+          # No marker comment means there is nothing stale to replace, which is the
+          # normal case and not worth an annotation.
+          case "$id" in ''|*[!0-9]*) exit 0 ;; esac
+
+          body=$(cat <<EOF
+          $marker
+          ## Build passing
+
+          Commit ${{ github.sha }} compiles, passes its unit tests and clears lint.
+
+          The failure report that was here described an earlier commit. It has been
+          replaced rather than left in place, so this comment cannot disagree with the
+          state of the branch it sits on.
+          EOF
+          )
+
+          if gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" \
+               -f body="$body" > /dev/null 2>&1; then
+            echo "::notice::replaced the stale failure report on PR #$pr with a passing-build note"
+          else
+            echo "::warning::could not replace the stale failure report on PR #$pr; it still describes an older commit"
+          fi
+          exit 0
+
       - name: Upload failure log
         if: failure()
         uses: actions/upload-artifact@v4
