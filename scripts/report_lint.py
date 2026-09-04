@@ -47,6 +47,14 @@ FAILING = {"Error", "Fatal"}
 MAX_ANNOTATIONS = 80
 DIGEST_PER_ID = 6
 
+# A non-failing check that fires only a handful of times is usually the interesting one
+# -- StaticFieldLeak, BatteryLife and InlinedApi each point at a specific line worth
+# reading, whereas GradleDependency firing 33 times is a version-catalogue conversation.
+# Anything at or below this count is annotated with its file and line; above it, the id
+# is folded into the aggregate annotation. Without this the rare findings were invisible:
+# the aggregate said "StaticFieldLeak×1" and nothing said where.
+ANNOTATE_WARNINGS_AT_OR_BELOW = 6
+
 
 def module_of(report: Path) -> str:
     """`core/build/reports/lint-results-debug.xml` -> `core`."""
@@ -114,13 +122,29 @@ def emit_annotations(issues: list[dict]) -> int:
         meta = f" {','.join(parts)}" if parts else ""
         print(f"::error{meta}::lint {issue['id']}: {enc(issue['message'])}")
         emitted += 1
-    # Warnings are aggregated rather than emitted one by one: a lint run can produce
-    # hundreds, and annotations past the first screen hide the errors that matter.
+    # Warnings are split by frequency. The rare ones get their own annotation with file
+    # and line, because that is where an actual defect hides; the frequent ones are
+    # aggregated, because a lint run can produce hundreds and annotations past the first
+    # screen would bury the errors that matter.
     if other:
         by_id = Counter(i["id"] for i in other)
-        summary = ", ".join(f"{k}×{v}" for k, v in by_id.most_common(12))
-        print(f"::warning::lint reported {len(other)} non-failing issue(s): {enc(summary)}")
-        emitted += 1
+        rare = [i for i in other if by_id[i["id"]] <= ANNOTATE_WARNINGS_AT_OR_BELOW]
+        bulk = [i for i in other if by_id[i["id"]] > ANNOTATE_WARNINGS_AT_OR_BELOW]
+        for issue in rare[:MAX_ANNOTATIONS]:
+            parts = []
+            if issue["file"]:
+                parts.append(f"file={enc(issue['file'])}")
+            if issue["line"].isdigit():
+                parts.append(f"line={issue['line']}")
+            meta = f" {','.join(parts)}" if parts else ""
+            print(f"::warning{meta}::lint {issue['id']}: {enc(issue['message'])}")
+            emitted += 1
+        if bulk:
+            counts = Counter(i["id"] for i in bulk)
+            summary = ", ".join(f"{k}×{v}" for k, v in counts.most_common(12))
+            print(f"::warning::lint reported {len(bulk)} further non-failing issue(s), "
+                  f"too frequent to list individually: {enc(summary)}")
+            emitted += 1
     if len(failing) > MAX_ANNOTATIONS:
         print(f"::warning::lint: {len(failing) - MAX_ANNOTATIONS} further error(s) not "
               f"annotated; see the digest below")

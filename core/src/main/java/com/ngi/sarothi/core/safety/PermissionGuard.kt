@@ -256,7 +256,17 @@ class PermissionGuard(private val context: Context) {
      * always resolves and the null it used to return on older Android was unreachable.
      * The nullable type stays: callers still have to cope with the intent not resolving,
      * which is a different question from the API level.
+     *
+     * BatteryLife is suppressed because the usage is the restricted-but-permitted kind
+     * rather than the kind the check exists to catch. Sarothi runs scheduled tasks and a
+     * geofence watcher that Android's doze mode otherwise suspends, so without this a
+     * reminder silently fails to fire on a phone left idle -- the exact failure the app
+     * exists to avoid. It is never requested on the user's behalf: the intent is handed
+     * to the caller to present, ignoringBatteryOptimisations() reports the current state
+     * so nothing pretends it was granted, and the explanation table carries a bilingual
+     * reason the user reads before deciding.
      */
+    @android.annotation.SuppressLint("BatteryLife")
     private fun batteryIntent(): Intent? = Intent(
         Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
         Uri.parse("package:${context.packageName}"),

@@ -745,6 +745,17 @@ class OpenSettingsPlugin : Plugin {
     }
 
     private companion object {
+        /**
+         * Which Android settings screen each name opens.
+         *
+         * StaticFieldLeak is suppressed deliberately, and this is not the usual reason to
+         * suppress it: the check sees `Context` in a static field's type and assumes one
+         * is being retained. Here Context appears only as a *parameter* of the lambdas --
+         * each entry receives a Context at call time and returns an Intent. The map holds
+         * no Context, no Activity and no View, so there is nothing to leak. Restructuring
+         * it to satisfy the heuristic would make the table worse to read for no gain.
+         */
+        @android.annotation.SuppressLint("StaticFieldLeak")
         val SETTINGS_SCREENS: Map<String, (Context) -> Intent?> = linkedMapOf(
             "home" to { Intent(Settings.ACTION_SETTINGS) },
             "wifi" to { Intent(Settings.ACTION_WIFI_SETTINGS) },
