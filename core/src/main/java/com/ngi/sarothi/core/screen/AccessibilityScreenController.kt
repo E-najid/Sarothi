@@ -863,10 +863,6 @@ class AccessibilityScreenController(
          */
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
 
-        /** @hide/@SystemApi in `android.provider.Settings`; the string is stable. */
-        private const val ACTION_ACCESSIBILITY_DETAILS_SETTINGS =
-            "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
-
         private const val MAX_NODES = 600
         private const val MIN_USEFUL_NODES = 2
         private const val MAX_ANCESTOR_HOPS = 6
@@ -909,6 +905,18 @@ object SarothiAccessibility {
      */
     const val SERVICE_CLASS = "com.ngi.sarothi.core.screen.SarothiAccessibilityService"
 
+    /**
+     * `android.provider.Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS` is
+     * @SystemApi/@hide, so the constant is not in the public SDK at compileSdk 35 and
+     * cannot be referenced at compile time. The action string itself is stable and is
+     * what AOSP Settings resolves.
+     *
+     * Declared here rather than in AccessibilityScreenController's companion: that one
+     * is `private` to a different type, and this object is where it is used.
+     */
+    private const val ACTION_ACCESSIBILITY_DETAILS_SETTINGS =
+        "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
+
     fun componentFor(context: Context): ComponentName? {
         val packageName = context.packageName?.takeIf { it.isNotBlank() } ?: return null
         return ComponentName(packageName, SERVICE_CLASS)
@@ -925,12 +933,10 @@ object SarothiAccessibility {
         val component = componentFor(context)
         if (component == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return settingsIntent()
         return runCatching {
-            // ACTION_ACCESSIBILITY_DETAILS_SETTINGS is @SystemApi/@hide, so the constant
-            // is not in the public SDK and cannot be referenced at compile time. The
-            // action string itself is stable and is what AOSP Settings resolves; the
-            // component goes in the public Intent.EXTRA_COMPONENT_NAME as a flattened
-            // string. If any OEM build refuses it, the runCatching falls back to the
-            // general accessibility list rather than crashing.
+            // The component goes in the public Intent.EXTRA_COMPONENT_NAME as a
+            // flattened string, which is what AOSP Settings reads. If an OEM build
+            // refuses the action, runCatching falls back to the general accessibility
+            // list rather than crashing.
             Intent(ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
                 putExtra(Intent.EXTRA_COMPONENT_NAME, component.flattenToString())
             }

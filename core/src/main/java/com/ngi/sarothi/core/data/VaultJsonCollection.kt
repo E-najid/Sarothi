@@ -36,9 +36,18 @@ class VaultJsonCollection<T>(
         // Iterable<T?> and whose result type is bounded `R : Any`) into toMutableList
         // makes the compiler infer MutableList<T? & Any>, which will not assign to
         // MutableList<T>. Building the list directly leaves nothing to infer.
+        //
+        // Two things get filtered, and both have to be: a non-object element in the
+        // array, and a null from toItem, which is declared `(JsonObject) -> T?` because
+        // a stored record may no longer parse against the current schema. Dropping such
+        // an entry is right -- the alternative would be to fail the whole read over one
+        // unreadable row. mapNotNull did this filtering too; replacing it with add()
+        // alone passed a T? where MutableList<T> wants a T.
         val items: MutableList<T> = mutableListOf()
         json?.getAsJsonArray(arrayKey)?.forEach { element ->
-            if (element.isJsonObject) items.add(toItem(element.asJsonObject))
+            if (!element.isJsonObject) return@forEach
+            val item = toItem(element.asJsonObject) ?: return@forEach
+            items.add(item)
         }
         cache = items
         return items
