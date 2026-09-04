@@ -34,8 +34,8 @@ plus **176 unit tests** in 10 more files. CI assembles two APKs on every push.
 | Gradle wrapper (`gradlew`, `gradle-wrapper.jar`) | ❌ Not committed (binary) |
 | `scripts/build_espeak_ng.sh`, `docs/`, `LICENSE` | ❌ Not yet written |
 
-CI produces `app-arm64-v8a-debug.apk` (65.2 MB) and `app-armeabi-v7a-debug.apk`
-(51.4 MB); see [Continuous integration](#continuous-integration). Nothing in this
+CI produces `app-arm64-v8a-debug.apk` (about 65 MB) and `app-armeabi-v7a-debug.apk`
+(about 51 MB); see [Continuous integration](#continuous-integration). Nothing in this
 repo pretends to more than it does: unimplemented capabilities throw or report
 themselves unavailable at runtime rather than returning fake results, and
 [What is missing](#what-is-missing) lists what is still outstanding.
@@ -372,7 +372,6 @@ is still outstanding:
 4. **`docs/`** — build instructions, vault/SD-card portability guide, threat model.
 5. **`LICENSE`** — the project is intended to be open source but no licence file
    has been chosen or added yet.
-
 6. **Instrumentation tests.** The 176 unit tests are JVM-only, so nothing that needs a
    device is executed by a machine: the accessibility service, MediaProjection capture,
    the native model runtimes, resumable downloads and all ten Compose screens compile and

@@ -407,10 +407,7 @@ jobs:
           $marker
           ## Build passing
 
-          Commit ${head_sha} compiles and clears lint. Its unit tests ran:
-          ${{ steps.tests.outputs.tests_total }} executed,
-          ${{ steps.tests.outputs.tests_failed }} failed,
-          ${{ steps.tests.outputs.tests_skipped }} skipped.
+          Commit ${head_sha} compiles and clears lint. Its unit tests ran: ${{ steps.tests.outputs.tests_total }} executed, ${{ steps.tests.outputs.tests_failed }} failed, ${{ steps.tests.outputs.tests_skipped }} skipped.
 
           The failure report that was here described an earlier commit. It has been
           replaced rather than left in place, so this comment cannot disagree with the
