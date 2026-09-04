@@ -150,6 +150,20 @@ for module in MODULES:
             kind, name = m.group(1), m.group(2)
             if kind not in RES_KIND_DIR:
                 continue
+            # `com.ngi.sarothi.core.R.drawable.x` is the sanctioned way to reach another
+            # module's resource under nonTransitiveRClass: the qualifier names the module
+            # whose R is being read, so check that module's resources, not this one's.
+            qualifier = re.search(
+                r"com\.ngi\.sarothi\.(\w+)\.R\.%s\.%s\b" % (re.escape(kind), re.escape(name)),
+                text,
+            )
+            if qualifier and qualifier.group(1) != module:
+                other = ROOT / qualifier.group(1)
+                found = any(f.stem == name
+                            for d in RES_KIND_DIR.get(kind, ())
+                            for f in other.rglob(f"res/{d}*/{name}.*"))
+                if found:
+                    continue
             if name not in available.get(kind, set()):
                 errors.append(
                     f"{rel(path)}: R.{kind}.{name} is referenced but :{module} declares no "
@@ -174,9 +188,17 @@ for module in MODULES:
             errors.append("app/src/main/AndroidManifest.xml: MISSING (:app has no manifest)")
         continue
     text = manifest.read_text(encoding="utf-8", errors="replace")
+    # A manifest's relative names (".SarothiApplication") resolve against the module's
+    # namespace, which AGP takes from build.gradle.kts -- not against the root package.
+    # Guessing "com.ngi.sarothi.<name>" here reported every :app class as missing the
+    # moment :app existed.
+    ns_file = ROOT / module / "build.gradle.kts"
+    ns_match = re.search(r'namespace\s*=\s*"([\w.]+)"',
+                         ns_file.read_text(encoding="utf-8")) if ns_file.is_file() else None
+    module_ns = ns_match.group(1) if ns_match else f"com.ngi.sarothi.{module}"
     for m in re.finditer(r'android:name="((?:com\.ngi\.sarothi|\.)[\w.]*)"', text):
         name = m.group(1)
-        fqcn = name if name.startswith("com.") else f"com.ngi.sarothi.{name.lstrip('.')}"
+        fqcn = name if name.startswith("com.") else f"{module_ns}.{name.lstrip('.')}"
         pkg, _, cls = fqcn.rpartition(".")
         if cls not in declared.get(pkg, set()):
             errors.append(f"{rel(manifest)}: android:name=\"{name}\" -> no class "
@@ -624,6 +646,92 @@ else:
                         f"(API {level}) can never be false at minSdk {min_sdk} -- the "
                         f"branch it guards is dead code"
                     )
+
+
+
+# ------------------------------- 9. the application module has a real entry point
+#
+# A manifest can name a class that does not exist: the merger never checks, the build
+# passes, and the app crashes the moment it is opened -- or, worse, never builds a graph
+# at all and every receiver finds an empty registry. Both names are resolved to source.
+# The application module must actually have an entry point: a manifest naming an
+# Application class and a launcher Activity, both of which must exist as source.
+def _class_exists(fqcn_or_relative: str, module_dir: Path, namespace: str) -> bool:
+    name = fqcn_or_relative
+    if name.startswith("."):
+        name = namespace + name
+    parts = name.split(".")
+    for kt in module_dir.rglob("*.kt"):
+        text = kt.read_text(encoding="utf-8", errors="replace")
+        pkg = re.search(r"^package\s+([\w.]+)", text, re.M)
+        if not pkg:
+            continue
+        pkg_parts = pkg.group(1).split(".")
+        if parts[: len(pkg_parts)] != pkg_parts:
+            continue
+        cls = ".".join(parts[len(pkg_parts):])
+        if re.search(r"^(?:@\w+(?:\([^)]*\))?\s*\n)*(?:public |internal |open |abstract )*class %s\b"
+                     % re.escape(cls), text, re.M):
+            return True
+    return False
+
+for build_file in sorted(ROOT.glob("*/build.gradle.kts")):
+    text = build_file.read_text(encoding="utf-8")
+    if "android.application" not in text:
+        continue
+    module_dir = build_file.parent
+    ns = re.search(r'namespace\s*=\s*"([\w.]+)"', text)
+    namespace = ns.group(1) if ns else ""
+    manifest = module_dir / "src/main/AndroidManifest.xml"
+    if not manifest.is_file():
+        errors.append(f"{rel(build_file)}: application module has no src/main/AndroidManifest.xml")
+        continue
+    mtext = manifest.read_text(encoding="utf-8")
+    app_cls = re.search(r'<application\b[^>]*android:name="([^"]+)"', mtext)
+    if not app_cls:
+        errors.append(
+            f"{rel(manifest)}: <application> has no android:name, so the dependency graph "
+            f"is never built and every registry a receiver needs stays empty"
+        )
+    elif not _class_exists(app_cls.group(1), module_dir, namespace):
+        errors.append(
+            f"{rel(manifest)}: android:name=\"{app_cls.group(1)}\" does not match any class "
+            f"in {rel(module_dir)}"
+        )
+    launcher = re.search(r'<activity\b[^>]*android:name="([^"]+)"[^>]*>.*?'
+                         r'android\.intent\.action\.MAIN.*?android\.intent\.category\.LAUNCHER',
+                         mtext, re.S)
+    if not launcher:
+        errors.append(f"{rel(manifest)}: no launcher activity -- the app cannot be opened")
+    elif not _class_exists(launcher.group(1), module_dir, namespace):
+        errors.append(
+            f"{rel(manifest)}: launcher activity \"{launcher.group(1)}\" does not match any "
+            f"class in {rel(module_dir)}"
+        )
+
+# --------------------------------------- 10. published seams are actually published
+#
+# A registry exists because something Android creates (a receiver, a foreground service,
+# an accessibility host) cannot be constructor-injected. If nothing ever calls attach(),
+# `current` is permanently null and every feature behind it silently does nothing while
+# still compiling, still passing lint, and still reporting success.
+for kt in kt_files:
+    text = stripped[kt]
+    for m in re.finditer(r"^object\s+(\w*Registry)\b", text, re.M):
+        registry = m.group(1)
+        if not re.search(r"fun\s+attach\s*\(", text):
+            continue
+        callers = []
+        for other in kt_files:
+            if other == kt:
+                continue
+            if re.search(r"\b%s\.attach\s*\(" % re.escape(registry), stripped[other]):
+                callers.append(other)
+        if not callers:
+            errors.append(
+                f"{rel(kt)}: {registry}.attach() is never called, so {registry}.current is "
+                f"always null and everything behind it is dead at runtime"
+            )
 
 # ------------------------------------------------------------- report
 

@@ -282,14 +282,21 @@ Where a capability cannot really be delivered, it says so instead of faking it:
 
 ## What is missing
 
-To make this build an APK and run, the following still has to be written:
+The following is still outstanding:
 
-1. **`:app` module** — `build.gradle.kts`, `AndroidManifest.xml`, resources
-   (strings/themes), `SarothiApplication`, the DI graph wiring every `:core`
-   constructor, `MainActivity`, and the Compose screens: vault setup, unlock,
-   chat/task with live checklist, models, plugins, permissions, safety, history,
-   schedules, persona. Plus the `Notifier` and `TextModelClient` implementations
-   that `:core` declares as interfaces for `:app` to provide.
+1. ~~**`:app` module**~~ — **written.** `build.gradle.kts` (application plugin, Compose,
+   `applicationId com.ngi.sarothi`), `AndroidManifest.xml` (Application + single launcher
+   Activity; every permission and service stays in `:core`'s manifest and merges in),
+   `strings.xml` / `themes.xml` (light + night), `SarothiApplication`, `di/AppGraph.kt`
+   wiring every `:core` constructor and publishing all four registry seams,
+   `notify/AndroidNotifier.kt`, `di/LlamaTextModelClient.kt` (the one `TextModelClient`
+   implementation), `di/PersonaRepository.kt`, and the Compose screens: task + live
+   checklist with the question and confirmation dialogs, vault pick/create/restore/lock,
+   and models with download progress.
+   Still to write: the persona editor, task history and log viewers, the schedule editor,
+   the permission walkthrough, and the accessibility-service prompt.
+
+
 2. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng `1.52.0` and
    installs `espeak-ng-data` into `core/src/main/assets/`. Only needed for Piper
    TTS; without it `EspeakPhonemizer.availability()` returns `NO_NATIVE_LIBRARY`
