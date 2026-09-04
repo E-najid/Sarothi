@@ -92,6 +92,11 @@ private enum class Sub(val title: String, val blurb: String) {
         "Every trigger that exists: what it asks Sarothi to do, when it last fired, and " +
             "how to pause or delete it.",
     ),
+    CONNECTORS(
+        "Connectors",
+        "Webhook addresses and secrets, your Home Assistant URL, and the RSS feeds the " +
+            "news plugin falls back to.",
+    ),
     SETTINGS(
         "Settings",
         "Mobile-data downloads, and biometric unlock as a convenience over your passphrase.",
@@ -146,6 +151,7 @@ private fun SarothiScaffold(graph: AppGraph) {
                 Sub.PERMISSIONS -> PermissionsScreen(graph, contentModifier)
                 Sub.SCHEDULES -> ScheduleScreen(graph, contentModifier)
                 Sub.SETTINGS -> SettingsScreen(graph, contentModifier)
+                Sub.CONNECTORS -> ConnectorsScreen(graph, contentModifier)
             }
         } else {
             when (tab) {

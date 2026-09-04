@@ -18,6 +18,7 @@ import com.ngi.sarothi.core.model.ModelDownloader
 import com.ngi.sarothi.core.net.HttpClient
 import com.ngi.sarothi.core.net.NetworkPolicy
 import com.ngi.sarothi.core.plugin.PluginContext
+import com.ngi.sarothi.core.plugin.PluginConfigStore
 import com.ngi.sarothi.core.plugin.PluginContextFactory
 import com.ngi.sarothi.core.plugin.PluginEnablement
 import com.ngi.sarothi.core.plugin.PluginManager
@@ -172,7 +173,12 @@ class AppGraph(context: Context) {
     val downloader = ModelDownloader(http, network, vault)
 
     private val enablement = PluginEnablement(vault)
-    private val configStore = VaultPluginConfigStore(vault)
+    /**
+     * Per-plugin settings from the vault's `plugins_config/<name>.json`. Exposed because
+     * the connectors screen reads and writes it directly: a Home Assistant URL is the
+     * user's to type, not something the agent should have to be asked to set.
+     */
+    val configStore: PluginConfigStore = VaultPluginConfigStore(vault)
 
     /**
      * Decides what a plugin may touch. The registry is passed in per call rather than

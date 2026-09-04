@@ -297,10 +297,10 @@ The following is still outstanding:
    audit log; access (special-access settings screens, per-plugin verdicts, and the
    accessibility-service prompt that decides whether Sarothi can see the screen);
    schedules and notification rules, editable by hand as well as created by the agent;
-   and settings for mobile-data downloads and biometric unlock.
-   Still to write: per-plugin config screens for the connectors (their keys live in
-   `plugins_config/<name>.json` and the agent can set them today, but there is no screen
-   to type a Home Assistant URL into by hand).
+   and settings for mobile-data downloads and biometric unlock; plus connectors, which is
+   where the webhook addresses and secrets, the Home Assistant URL and the news plugin's
+   fallback RSS feeds are typed by hand. The `webhook` plugin's own refusal message has
+   always pointed at "Settings → Connectors → Webhooks"; that destination now exists.
 
 
 2. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng `1.52.0` and
