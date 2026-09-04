@@ -43,12 +43,35 @@ android {
         }
     }
 
+    // One APK per ABI. Every native dependency here -- ONNX Runtime for Piper TTS, ML
+    // Kit's text recognizer, and llama.cpp/whisper.cpp when they are built -- ships a
+    // library for each ABI it supports, so a universal APK carries all of them and only
+    // ever loads one. On a 3 GB phone the download is the barrier to trying the app at
+    // all, and paying it four times over for libraries that will never be dlopened is not
+    // a trade worth making.
+    //
+    // The cost is stated rather than hidden: an x86_64 emulator cannot install these APKs.
+    // Add "x86_64" to `include` for a local emulator build, or install on a device.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
+
     packaging {
         resources {
             excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "META-INF/DEPENDENCIES")
         }
         jniLibs {
-            keepDebugSymbols += "**/*.so"
+            // Only Sarothi's own bridge keeps its symbols, so a native crash in
+            // llama.cpp/ggml stays readable in a bug report. This was "**/*.so", which
+            // also shipped the full symbol tables of every prebuilt third-party library --
+            // symbols nothing of ours can produce a stack trace from, and the single
+            // largest contributor to a 195 MB debug APK.
+            keepDebugSymbols += "**/libsarothi_native.so"
         }
     }
 }
