@@ -171,10 +171,29 @@ class ScheduleService : Service() {
             else -> "Re-arming scheduled tasks"
         }
         val notification = buildNotification(title, taskId ?: "")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        when {
+            // The type this service declares in the manifest. It only exists from API 34.
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+
+            // On API 29-33 the three-argument overload exists but SPECIAL_USE does not.
+            // Passing that bit anyway hands the framework a type it has never heard of,
+            // which on the versions that validate the argument against the manifest --
+            // and an older platform parses "specialUse" as nothing at all -- risks the
+            // start being rejected. MANIFEST means "whatever this service declared" and
+            // is available on every version that has the overload.
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST,
+                )
+
+            else -> startForeground(NOTIFICATION_ID, notification)
         }
     }
 

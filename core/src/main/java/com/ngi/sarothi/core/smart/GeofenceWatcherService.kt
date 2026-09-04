@@ -264,10 +264,19 @@ class GeofenceWatcherService : Service() {
         listener = null
     }
 
+    /**
+     * Whether any usable location provider is switched on.
+     *
+     * `FUSED_PROVIDER` only exists from API 31 and asking about it earlier throws for an
+     * unknown provider, so it carries the same guard [chooseProvider] gives it instead of
+     * being left for the runCatching to swallow -- which would report "location off" for
+     * the wrong reason and hide a genuine failure underneath.
+     */
     private fun locationEnabled(manager: LocationManager): Boolean = runCatching {
         manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
             manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ||
-            manager.isProviderEnabled(LocationManager.FUSED_PROVIDER)
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                manager.isProviderEnabled(LocationManager.FUSED_PROVIDER))
     }.getOrDefault(false)
 
     /**

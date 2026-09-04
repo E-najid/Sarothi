@@ -325,6 +325,16 @@ class PermissionGuard(private val context: Context) {
             "schedule_task" to setOf(BATTERY_OPTIMISATION),
         )
 
+        /**
+         * Why each permission is wanted, in both languages, so the guard and the request
+         * screen give the same reason.
+         *
+         * Three keys name a permission newer than minSdk 26 -- POST_NOTIFICATIONS (33),
+         * FOREGROUND_SERVICE (28), USE_BIOMETRIC (28). These are string constants inlined
+         * into the map at compile time; nothing here calls the API they belong to, and on
+         * an older device the key is simply never looked up. Lint's InlinedApi is warning
+         * about a value in this case, not a call.
+         */
         val PERMISSION_EXPLANATIONS: Map<String, Explanation> = mapOf(
             Manifest.permission.SEND_SMS to Explanation(
                 "Send SMS messages as you. Sarothi always shows the number and the full text and " +
