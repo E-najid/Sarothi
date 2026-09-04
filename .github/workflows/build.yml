@@ -199,14 +199,65 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Unit tests
-        # No test sources exist yet; the task is wired so that the first test added
-        # is executed by CI without a workflow change.
+        # Runs the JVM suites and counts what actually executed. The count is not
+        # decoration. A Gradle test task with no matching sources succeeds, so before
+        # this existed "the tests pass" was true of a repository containing none: the
+        # green tick and the PR comment both described a suite that never ran. Mining
+        # the XML results turns an empty suite into a build failure, so the claim can
+        # only be made when there is something behind it.
+        id: tests
         continue-on-error: false
         run: |
           set -uo pipefail
           gradle --no-daemon --stacktrace --console=plain \
             :core:testDebugUnitTest :plugins:testDebugUnitTest 2>&1 | tee -a build.log
-          exit "${PIPESTATUS[0]}"
+          status="${PIPESTATUS[0]}"
+
+          # Counted even when the build failed, so a red run still reports how far the
+          # suites got rather than going quiet.
+          counts=$(python3 scripts/count_unit_tests.py --require-nonzero)
+          count_status=$?
+          read -r total failed skipped <<< "$counts"
+          # An empty read means the counting itself failed, which must not be
+          # reported as "0 failed" and mistaken for a clean run.
+          total="${total:-}"; failed="${failed:-}"; skipped="${skipped:-}"
+          if [ -z "$total" ] || [ -z "$failed" ] || [ -z "$skipped" ]; then
+            echo "::error::could not count the unit test results (counter said: $counts)"
+            exit 1
+          fi
+          # Exit 2 is a result file that could not be parsed, which is a truncated
+          # suite rather than an absent one; exit 1 is the empty-suite guard below,
+          # already reported. Either way the Gradle status still decides the build.
+          if [ "$count_status" -eq 2 ]; then
+            echo "::error::a unit test result file could not be parsed; the suite may be truncated"
+            exit 2
+          fi
+
+          {
+            echo "tests_total=$total"
+            echo "tests_failed=$failed"
+            echo "tests_skipped=$skipped"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Unit tests"
+            echo
+            if [ "$total" -eq 0 ]; then
+              echo "No tests ran."
+            else
+              echo "**$total** ran, **$failed** failed, **$skipped** skipped."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if [ "$total" -eq 0 ]; then
+            echo "::error::the unit test tasks succeeded without executing a single test"
+            echo "::error::an empty suite cannot be reported as passing"
+            exit 1
+          fi
+          echo "::notice::$total unit tests ran, $failed failed, $skipped skipped"
 
       # Runs only when something above failed. Raw job logs live on blob storage
       # that tooling often cannot reach, and scrolling four thousand lines of
@@ -356,7 +407,10 @@ jobs:
           $marker
           ## Build passing
 
-          Commit ${head_sha} compiles, passes its unit tests and clears lint.
+          Commit ${head_sha} compiles and clears lint. Its unit tests ran:
+          ${{ steps.tests.outputs.tests_total }} executed,
+          ${{ steps.tests.outputs.tests_failed }} failed,
+          ${{ steps.tests.outputs.tests_skipped }} skipped.
 
           The failure report that was here described an earlier commit. It has been
           replaced rather than left in place, so this comment cannot disagree with the

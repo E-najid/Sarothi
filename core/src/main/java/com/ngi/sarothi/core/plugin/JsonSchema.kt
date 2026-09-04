@@ -334,6 +334,9 @@ data class JsonSchema(
                         if (it.isJsonPrimitive) it.asString else null
                     },
                     default = json.get("default")?.takeIf { it.isJsonPrimitive && !it.isJsonNull }?.asString,
+                    // toJson writes maxLength; dropping it here meant a schema that
+                    // travelled through JSON silently stopped enforcing its own limit.
+                    maxLength = json.get("maxLength")?.takeIf { it.isJsonPrimitive && !it.isJsonNull }?.asInt,
                 )
                 "integer" -> Property.Integer(
                     description = description,
@@ -354,6 +357,9 @@ data class JsonSchema(
                 "array" -> Property.List(
                     description = description,
                     items = json.getAsJsonObject("items")?.let { propertyFromJson(it) } ?: Property.Text("item"),
+                    default = json.getAsJsonArray("default")?.mapNotNull {
+                        if (it.isJsonPrimitive) it.asString else null
+                    },
                 )
                 "object" -> Property.Record(
                     description = description,

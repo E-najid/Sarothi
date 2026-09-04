@@ -90,6 +90,16 @@ data class ScheduledTask(
             return if (target > fromEpochMillis) target else null
         }
 
+        // Hourly has to be settled before the candidate below is seeded from timeOfDay.
+        // Seeding it first and then matching HOURLY unconditionally returns that daily
+        // time on the first pass, so "every hour" fires once a day at 09:00 and the
+        // plusHours(1) step is unreachable. A task nobody set a time for has no
+        // time-of-day meaning at all, so it is not consulted here.
+        if (recurrence == Recurrence.HOURLY) {
+            return from.plusHours(1).withMinute(0).withSecond(0).withNano(0)
+                .toInstant().toEpochMilli()
+        }
+
         val time = timeOfDay ?: LocalTime.of(9, 0)
         var candidate = from.toLocalDate().atTime(time).atZone(zone)
         if (!candidate.toInstant().isAfter(from.toInstant())) candidate = candidate.plusDays(1)
@@ -100,7 +110,6 @@ data class ScheduledTask(
         // looping forever.
         repeat(370) {
             val matches = when (recurrence) {
-                Recurrence.HOURLY -> true
                 Recurrence.DAILY -> true
                 Recurrence.WEEKLY -> daysOfWeek.isEmpty() || candidate.dayOfWeek in daysOfWeek
                 Recurrence.MONTHLY -> {
@@ -112,11 +121,7 @@ data class ScheduledTask(
                 else -> false
             }
             if (matches) return candidate.toInstant().toEpochMilli()
-            candidate = if (recurrence == Recurrence.HOURLY) {
-                from.plusHours(1).withMinute(0).withSecond(0).withNano(0)
-            } else {
-                candidate.plusDays(1)
-            }
+            candidate = candidate.plusDays(1)
         }
         return null
     }
