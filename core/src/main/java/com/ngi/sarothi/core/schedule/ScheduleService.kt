@@ -200,7 +200,7 @@ class ScheduleService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // NotificationChannel is API 26 and minSdk is 26.
         val manager = getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         manager.createNotificationChannel(
@@ -222,11 +222,10 @@ class ScheduleService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        }
+        // The channel-based constructor is API 26 and minSdk is 26, so the deprecated
+        // channel-less builder it fell back to was unreachable -- and a notification
+        // without a channel is silently dropped on every device this app runs on.
+        val builder = Notification.Builder(this, CHANNEL_ID)
         return builder
             .setSmallIcon(android.R.drawable.ic_menu_agenda)
             .setContentTitle(title)
@@ -252,14 +251,12 @@ class ScheduleService : Service() {
 
         fun rearm(context: Context) {
             val intent = Intent(context, ScheduleService::class.java).setAction(ScheduleReceiver.ACTION_REARM)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-            else context.startService(intent)
+            context.startForegroundService(intent)
         }
 
         fun runOverdue(context: Context) {
             val intent = Intent(context, ScheduleService::class.java).setAction(ScheduleReceiver.ACTION_RUN_OVERDUE)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-            else context.startService(intent)
+            context.startForegroundService(intent)
         }
     }
 }

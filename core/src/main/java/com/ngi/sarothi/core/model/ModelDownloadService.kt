@@ -365,18 +365,17 @@ class ModelDownloadService : Service() {
     }
 
     private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION") stopForeground(true)
-        }
+        // STOP_FOREGROUND_REMOVE is API 24 and minSdk is 26, so the deprecated
+        // stopForeground(true) branch this guarded could never have run.
+        stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun notificationManager(): NotificationManager? =
         getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // NotificationChannel is API 26 and minSdk is 26, so there is no older path to
+        // guard against.
         val manager = notificationManager() ?: return
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -413,8 +412,10 @@ class ModelDownloadService : Service() {
                 .setAction(ACTION_DOWNLOAD)
                 .putExtra(EXTRA_MODEL_IDS, modelIds.toTypedArray())
             runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-                else context.startService(intent)
+                // startForegroundService is API 26 and minSdk is 26; startService would
+                // throw IllegalStateException for a foreground service on every device
+                // this app can install on, so the alternative was dead.
+                context.startForegroundService(intent)
             }.onFailure { failure ->
                 Log.e(TAG, "Could not start the download service", failure)
             }

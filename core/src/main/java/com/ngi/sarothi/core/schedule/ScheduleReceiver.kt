@@ -3,7 +3,6 @@ package com.ngi.sarothi.core.schedule
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 
 /**
@@ -21,11 +20,8 @@ class ScheduleReceiver : BroadcastReceiver() {
             .setAction(action)
             .putExtra(EXTRA_TASK_ID, intent.getStringExtra(EXTRA_TASK_ID))
             .putExtra(EXTRA_REASON, intent.getStringExtra(EXTRA_REASON))
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(service)
-        } else {
-            context.startService(service)
-        }
+        // startForegroundService is API 26 and minSdk is 26.
+        context.startForegroundService(service)
     }
 
     companion object {

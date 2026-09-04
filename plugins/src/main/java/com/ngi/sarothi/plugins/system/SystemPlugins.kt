@@ -757,10 +757,9 @@ class OpenSettingsPlugin : Plugin {
             "storage" to { Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS) },
             "location" to { Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS) },
             "accessibility" to { Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS) },
-            "notifications" to {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                else Intent(Settings.ACTION_SETTINGS)
-            },
+            // ACTION_APP_NOTIFICATION_SETTINGS is API 26 and minSdk is 26, so the
+            // generic settings list it fell back to was unreachable.
+            "notifications" to { Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS) },
             "date_time" to { Intent(Settings.ACTION_DATE_SETTINGS) },
             "language" to { Intent(Settings.ACTION_LOCALE_SETTINGS) },
             "security" to { Intent(Settings.ACTION_SECURITY_SETTINGS) },

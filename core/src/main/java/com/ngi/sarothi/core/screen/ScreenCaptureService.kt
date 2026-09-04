@@ -349,7 +349,7 @@ class ScreenCaptureService : Service(), ScreenshotSource {
     private fun obtainMainHandler(): Handler = mainHandler ?: Handler(mainLooper).also { mainHandler = it }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // NotificationChannel is API 26 and minSdk is 26.
         val manager = getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         manager.createNotificationChannel(
@@ -380,11 +380,8 @@ class ScreenCaptureService : Service(), ScreenshotSource {
             Intent(this, ScreenCaptureService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        }
+        // The channel-based constructor is API 26 and minSdk is 26.
+        val builder = Notification.Builder(this, CHANNEL_ID)
         return builder
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Sarothi can read the screen as an image")
@@ -429,11 +426,8 @@ class ScreenCaptureService : Service(), ScreenshotSource {
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            // startForegroundService is API 26 and minSdk is 26.
+            context.startForegroundService(intent)
         }
 
         fun stop(context: Context) {

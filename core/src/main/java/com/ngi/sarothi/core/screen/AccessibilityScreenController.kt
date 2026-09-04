@@ -202,11 +202,9 @@ class AccessibilityScreenController(
                         parentIndex = parentIndex,
                         text = info.text?.toString()?.takeIf { it.isNotBlank() },
                         contentDescription = info.contentDescription?.toString()?.takeIf { it.isNotBlank() },
-                        hintText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            runCatching { info.hintText?.toString()?.takeIf { it.isNotBlank() } }.getOrNull()
-                        } else {
-                            null
-                        },
+                        // getHintText() is API 26 and minSdk is 26, so the null this
+                        // returned on older Android was unreachable.
+                        hintText = runCatching { info.hintText?.toString()?.takeIf { it.isNotBlank() } }.getOrNull(),
                         className = info.className?.toString(),
                         viewIdResourceName = info.viewIdResourceName,
                         packageName = info.packageName?.toString(),

@@ -126,7 +126,9 @@ class SarothiAccessibilityService : AccessibilityService(), AccessibilityHost {
      */
     override suspend fun runGesture(description: GestureDescription): GestureOutcome {
         if (!connected) return GestureOutcome.NOT_DISPATCHED
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return GestureOutcome.UNSUPPORTED
+        // dispatchGesture is API 24 and minSdk is 26, so it is always present; reporting
+        // UNSUPPORTED here could never happen and would have hidden a real failure mode
+        // behind one that cannot occur.
         return suspendCancellableCoroutine { continuation ->
             val callback = object : GestureResultCallback() {
                 override fun onCompleted(completedDescription: GestureDescription?) {

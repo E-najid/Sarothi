@@ -251,15 +251,16 @@ class PermissionGuard(private val context: Context) {
     fun canWriteSettings(): Boolean =
         runCatching { Settings.System.canWrite(context) }.getOrDefault(false)
 
-    private fun batteryIntent(): Intent? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Intent(
-                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                Uri.parse("package:${context.packageName}"),
-            )
-        } else {
-            null
-        }
+    /**
+     * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is API 23 and minSdk is 26, so this
+     * always resolves and the null it used to return on older Android was unreachable.
+     * The nullable type stays: callers still have to cope with the intent not resolving,
+     * which is a different question from the API level.
+     */
+    private fun batteryIntent(): Intent? = Intent(
+        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        Uri.parse("package:${context.packageName}"),
+    )
 
     /** The settings screen that controls one runtime permission, best effort. */
     fun settingsIntentFor(permission: String): Intent = Intent(

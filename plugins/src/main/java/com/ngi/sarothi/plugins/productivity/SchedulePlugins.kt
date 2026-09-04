@@ -1,7 +1,6 @@
 package com.ngi.sarothi.plugins.productivity
 
 import android.content.Intent
-import android.os.Build
 import com.google.gson.JsonObject
 import com.ngi.sarothi.core.plugin.JsonSchema
 import com.ngi.sarothi.core.plugin.Plugin
@@ -601,11 +600,8 @@ class RunScheduleNowPlugin : Plugin {
             .putExtra(ScheduleReceiver.EXTRA_TASK_ID, task.id)
             .putExtra(ScheduleReceiver.EXTRA_REASON, "requested by the user during another task")
         val started = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.appContext.startForegroundService(intent)
-            } else {
-                context.appContext.startService(intent)
-            }
+            // startForegroundService is API 26 and minSdk is 26.
+            context.appContext.startForegroundService(intent)
         }
         return started.fold(
             onSuccess = {

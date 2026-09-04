@@ -344,11 +344,11 @@ class GeofenceWatcherService : Service() {
             .setSmallIcon(R.drawable.ic_sarothi_status)
             .setOngoing(true)
             .setContentIntent(openIntent)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
-            builder.addAction(
-                Notification.Action.Builder(null, "Stop watching", stopIntent).build(),
-            )
-        }
+        // Notification.Action.Builder is API 20 and minSdk is 26, so the Stop action is
+        // always added; guarding it meant a wearable-only code path in a phone app.
+        builder.addAction(
+            Notification.Action.Builder(null, "Stop watching", stopIntent).build(),
+        )
         return builder.build()
     }
 
@@ -376,7 +376,7 @@ class GeofenceWatcherService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // NotificationChannel is API 26 and minSdk is 26.
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -402,8 +402,8 @@ class GeofenceWatcherService : Service() {
         fun sync(context: Context) {
             val intent = Intent(context, GeofenceWatcherService::class.java).setAction(ACTION_START)
             runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-                else context.startService(intent)
+                // startForegroundService is API 26 and minSdk is 26.
+                context.startForegroundService(intent)
             }.onFailure { failure ->
                 Log.w(TAG, "Could not start the geofence watcher", failure)
             }

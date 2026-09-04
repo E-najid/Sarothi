@@ -580,6 +580,51 @@ for path in kt_files:
                 f"wrap the whole `if` in parens"
             )
 
+# 8. An SDK_INT guard that can never be false.
+#    minSdk is read from the build files rather than hardcoded here, so raising it
+#    immediately turns the guards it obsoletes into findings. A dead guard is not just
+#    noise: the fallback branch it protects is code that can never execute, and a reader
+#    reasonably concludes the app supports Android versions it does not. Lint reports
+#    these as ObsoleteSdkInt and there were 20 of them.
+VERSION_CODES = {
+    "CUPCAKE": 3, "DONUT": 4, "ECLAIR": 5, "FROYO": 8, "GINGERBREAD": 9, "HONEYCOMB": 11,
+    "ICE_CREAM_SANDWICH": 14, "JELLY_BEAN": 16, "JELLY_BEAN_MR1": 17, "JELLY_BEAN_MR2": 18,
+    "KITKAT": 19, "KITKAT_WATCH": 20, "LOLLIPOP": 21, "LOLLIPOP_MR1": 22, "M": 23,
+    "N": 24, "N_MR1": 25, "O": 26, "O_MR1": 27, "P": 28, "Q": 29, "R": 30, "S": 31,
+    "S_V2": 32, "TIRAMISU": 33, "UPSIDE_DOWN_CAKE": 34, "VANILLA_ICE_CREAM": 35,
+}
+SDK_GUARD = re.compile(
+    r"SDK_INT\s*(>=|>|<|<=)\s*Build\.VERSION_CODES\.([A-Z_0-9]+)"
+)
+min_sdk: int | None = None
+for gradle_file in ROOT.glob("*/build.gradle.kts"):
+    found = re.search(r"minSdk\s*=\s*(\d+)", gradle_file.read_text(encoding="utf-8"))
+    if found:
+        candidate = int(found.group(1))
+        min_sdk = candidate if min_sdk is None else min(min_sdk, candidate)
+
+if min_sdk is None:
+    warnings.append("no minSdk found in any */build.gradle.kts, so the SDK_INT guard "
+                    "check was skipped")
+else:
+    for path, text in stripped.items():
+        for line_no, line in enumerate(text.split("\n"), 1):
+            for m in SDK_GUARD.finditer(line):
+                op, name = m.group(1), m.group(2)
+                level = VERSION_CODES.get(name)
+                if level is None:
+                    continue
+                # `SDK_INT >= level` is always true, and `SDK_INT < level` always false,
+                # once minSdk is at or above that level.
+                dead = (op in (">=", ">") and min_sdk >= level) or \
+                       (op in ("<", "<=") and min_sdk > level)
+                if dead:
+                    errors.append(
+                        f"{rel(path)}:{line_no}: `SDK_INT {op} VERSION_CODES.{name}` "
+                        f"(API {level}) can never be false at minSdk {min_sdk} -- the "
+                        f"branch it guards is dead code"
+                    )
+
 # ------------------------------------------------------------- report
 
 print(f"scanned {len(kt_files)} Kotlin files across {MODULES}\n")
