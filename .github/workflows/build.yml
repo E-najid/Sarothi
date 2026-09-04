@@ -417,6 +417,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: build
+    # Kept non-blocking only while lint failures are still being worked through, so a
+    # lint rule cannot hide a green build. The Report lint step below makes the failure
+    # impossible to miss either way; flipping this to false is the point once the issue
+    # count reaches zero.
     continue-on-error: true
 
     steps:
@@ -442,13 +446,48 @@ jobs:
           gradle-version: "${{ env.GRADLE_VERSION }}"
 
       - name: Lint library modules
-        run: gradle --no-daemon :core:lintDebug :plugins:lintDebug
+        # Captured for the same reason the build log is: when lint fails without
+        # producing its XML report, the Gradle output is the only evidence left.
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --console=plain :core:lintDebug :plugins:lintDebug 2>&1 | tee lint.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report lint
+        # Lint writes HTML and XML reports that are uploaded as artifacts, and
+        # artifacts are served from blob storage that tooling frequently cannot reach.
+        # Re-emitting every failing issue as a workflow-command annotation puts them on
+        # the ordinary REST API instead, with file and line attached.
+        if: always()
+        run: |
+          set -uo pipefail
+          # stdout carries the ::error:: commands, which the runner parses into
+          # annotations. The digest therefore goes to a file first: redirecting the
+          # script straight into the step summary would swallow every annotation.
+          python3 scripts/report_lint.py -o lint-digest.md
+          cat lint-digest.md >> "$GITHUB_STEP_SUMMARY"
+
+          if ! ls core/build/reports/lint-results-*.xml \
+                  plugins/build/reports/lint-results-*.xml > /dev/null 2>&1; then
+            {
+              echo '### Lint produced no XML report'
+              echo
+              echo 'So the failure is in lint itself, not in the code it checked. The'
+              echo 'tail of the Gradle output follows.'
+              echo
+              echo '```'
+              tail -n 80 lint.log 2> /dev/null || echo '(no lint.log was captured)'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: lint-reports
           path: |
+            lint.log
+            lint-digest.md
             core/build/reports/lint-results-*.html
             core/build/reports/lint-results-*.xml
             plugins/build/reports/lint-results-*.html
