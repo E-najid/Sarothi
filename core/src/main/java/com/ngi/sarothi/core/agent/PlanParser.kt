@@ -80,7 +80,7 @@ class PlanParser(private val knownTools: Set<String>) {
                 "The model chose to act but produced no usable steps. Every step needs a known " +
                     "tool name; the tools available were: ${knownTools.sorted().joinToString()}.",
             )
-            else -> PlanParseOutcome.Parsed(Plan(kind, thought, steps, answer, ask, assumptions, raw)),
+            else -> PlanParseOutcome.Parsed(Plan(kind, thought, steps, answer, ask, assumptions, raw))
         }
     }
 

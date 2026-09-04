@@ -18,6 +18,7 @@ error, so the output stays trustworthy rather than crying wolf.
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 import sys
@@ -316,6 +317,240 @@ for name, files in sorted(referenced.items()):
             errors.append(message)
     elif not os.access(script, os.X_OK):
         warnings.append(f"scripts/{name} exists but is not executable")
+
+# ------------------------------------------- Kotlin traps CI already caught
+#
+# Every check below exists because the compiler hit it on a real build. They run on
+# comment- and literal-stripped source (reusing check_kotlin_braces.strip_source, which
+# blanks those regions to equal-length spaces so line numbers stay correct), so prose
+# in a KDoc that mentions a forbidden API does not trip the gate.
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_kotlin_braces import strip_source  # noqa: E402
+
+stripped: dict[Path, str] = {
+    path: strip_source(path.read_text(encoding="utf-8", errors="replace"))
+    for path in kt_files
+}
+
+# 1. Hex Long literals above Long.MAX_VALUE.
+#    Java silently reinterprets 0xFF... as negative; Kotlin rejects it outright with
+#    "Value out of range". This cost 3 errors in Blake2b.kt's IV table. Write such
+#    constants as negative two's-complement literals instead.
+HEX_LONG = re.compile(r"(?<![\w.])0[xX]([0-9a-fA-F]{16})(?![0-9a-fA-FuU])")
+for path, text in stripped.items():
+    for line_no, line in enumerate(text.split("\n"), 1):
+        for m in HEX_LONG.finditer(line):
+            if int(m.group(1), 16) > 0x7FFF_FFFF_FFFF_FFFF:
+                errors.append(
+                    f"{rel(path)}:{line_no}: hex literal 0x{m.group(1)} exceeds Long.MAX_VALUE; "
+                    f"Kotlin will not reinterpret it as negative (use {int(m.group(1), 16) - (1 << 64)})"
+                )
+
+# 2. A trailing comma after the last entry of a `when`.
+#    Kotlin allows trailing commas in declarations and argument lists but NOT here: the
+#    parser then demands another condition and reports "'else' entry must be the last one"
+#    plus a cascade of syntax errors. Hit in SarothiAgent.kt and PlanParser.kt.
+WHEN_ELSE_COMMA = re.compile(r"^\s*else\s*->.*,\s*$")
+for path, text in stripped.items():
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if WHEN_ELSE_COMMA.match(line):
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if nxt.startswith("}"):
+                errors.append(
+                    f"{rel(path)}:{i + 1}: trailing comma after a `when` else-branch "
+                    f"(Kotlin expects another condition here)"
+                )
+
+# 3. `String.split { predicate }`.
+#    String.split has overloads for Char, vararg String and Regex -- there is no
+#    (Char) -> Boolean overload, so the trailing-lambda form cannot resolve. Hit in
+#    VaultStores.tokenize(); use Regex("[^\\p{L}\\p{N}]+") to keep Bengali letters.
+SPLIT_LAMBDA = re.compile(r"\.split\s*\{")
+for path, text in stripped.items():
+    for line_no, line in enumerate(text.split("\n"), 1):
+        if SPLIT_LAMBDA.search(line):
+            errors.append(
+                f"{rel(path)}:{line_no}: `String.split {{ }}` has no predicate overload; "
+                f"pass a Regex or a delimiter instead"
+            )
+
+# 4. An interface declared inside an `inner` class.
+#    A nested interface is implicitly static and an inner class has no static members,
+#    so Kotlin reports "'Interface' is prohibited here". Hit in SarothiAgent.TaskRun.
+INNER_CLASS = re.compile(r"\binner\s+class\s+(\w+)")
+for path, text in stripped.items():
+    for m in INNER_CLASS.finditer(text):
+        brace = text.find("{", m.end())
+        if brace < 0:
+            continue
+        depth, end = 0, brace
+        while end < len(text):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        body = text[brace:end + 1]
+        for nested in re.finditer(r"\b(?:sealed\s+|private\s+|internal\s+)*interface\s+(\w+)", body):
+            line_no = text[:brace + nested.start()].count("\n") + 1
+            errors.append(
+                f"{rel(path)}:{line_no}: interface `{nested.group(1)}` is declared inside "
+                f"inner class `{m.group(1)}`; move it to the enclosing class"
+            )
+
+# 5. Android / library members that are not in the public SDK at compileSdk 35.
+#    Each entry was a real compile error, with the working replacement recorded so the
+#    message tells the next person what to write instead.
+NOT_IN_PUBLIC_SDK = {
+    r"Settings\s*\.\s*ACTION_ACCESSIBILITY_DETAILS_SETTINGS":
+        "@SystemApi/@hide; use the literal \"android.settings.ACCESSIBILITY_DETAILS_SETTINGS\"",
+    r"Intent\s*\.\s*EXTRA_ACCESSIBILITY_COMPONENT_NAME":
+        "does not exist; AOSP Settings reads Intent.EXTRA_COMPONENT_NAME",
+    r"\.roleDescription\b":
+        "AccessibilityNodeInfo has no getRoleDescription() in the framework SDK; read "
+        "extras.getCharSequence(\"AccessibilityNodeInfo.roleDescription\") or use "
+        "AccessibilityNodeInfoCompat",
+    r"OrtEnvironment[\s\S]{0,80}?\.createSessionOptions\s*\(|\benvironment\.createSessionOptions\s*\(":
+        "OrtEnvironment has no such factory; construct ai.onnxruntime.OrtSession.SessionOptions()",
+}
+for path, text in stripped.items():
+    for pattern, why in NOT_IN_PUBLIC_SDK.items():
+        for m in re.finditer(pattern, text):
+            line_no = text[:m.start()].count("\n") + 1
+            errors.append(f"{rel(path)}:{line_no}: {m.group(0).strip()} is not public API -- {why}")
+
+# 6. Named arguments that do not match the declared parameter.
+#    Only checks functions declared exactly once in this repo and only reports a name
+#    that appears in no declaration of it, so stdlib calls and genuine overloads are
+#    never flagged. Hit twice: PluginAvailability.unavailable takes `fixAction`, but
+#    PluginManager.kt and MetaPlugins.kt passed `fix =`.
+# Balanced-paren scan, not `\(([^)]*)\)`: a parameter typed as a function --
+# `onProgress: (DownloadProgress) -> Unit = {}` -- closes the naive pattern early and
+# silently drops every parameter after it, which produced 13 phantom mismatches.
+FUN_HEAD = re.compile(r"\bfun\s+(?:[\w.<>]+\s*\.\s*)?([A-Za-z_]\w*)\s*\(")
+TYPE_DECL = re.compile(
+    r"^\s*(?:(?:public|private|internal|protected|abstract|open|sealed|data|value|"
+    r"annotation|enum|inner|expect|actual)\s+)*(?:class|interface|object)\s+([A-Za-z_]\w*)"
+)
+
+# Declarations are indexed both bare and qualified by their enclosing type. The
+# qualified index is what makes the check usable at all: `unavailable` is declared three
+# times (PluginAvailability, VoiceAvailability, VisionGrounding) with different parameter
+# names, so an unqualified lookup is ambiguous and would have to be skipped.
+# A `companion object` header captures no name, so it is skipped and the surrounding
+# class becomes the owner -- which is exactly how these factories are called.
+def _matching_paren(text: str, open_index: int) -> int:
+    """Index of the `)` closing the `(` at open_index, or -1 if unbalanced."""
+    depth = 0
+    for i in range(open_index, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+bare_params: dict[str, set] = defaultdict(set)
+bare_count: dict[str, int] = defaultdict(int)
+owned_params: dict[tuple, set] = defaultdict(set)
+owned_count: dict[tuple, int] = defaultdict(int)
+
+for path, text in stripped.items():
+    lines = text.split("\n")
+    indents = [len(ln) - len(ln.lstrip()) for ln in lines]
+    newlines = [i for i, ch in enumerate(text) if ch == "\n"]
+    owners = []  # (line index, indent, type name)
+    for idx, ln in enumerate(lines):
+        tm = TYPE_DECL.match(ln)
+        if tm:
+            owners.append((idx, indents[idx], tm.group(1)))
+
+    for m in FUN_HEAD.finditer(text):
+        close = _matching_paren(text, m.end() - 1)
+        if close < 0:
+            continue
+        name = m.group(1)
+        # The identifier before each `:` is the parameter name. String literals are
+        # already blanked, so a default like `label: String = "a:b"` adds no noise, and
+        # a generic bound `<T : Any>` only ever widens the allowed set.
+        pnames = set(re.findall(r"\b([A-Za-z_]\w*)\s*:", text[m.end():close]))
+        line_idx = bisect.bisect_right(newlines, m.start())
+        indent = indents[line_idx]
+        owner = next(
+            (tname for tidx, tindent, tname in reversed(owners) if tidx < line_idx and tindent < indent),
+            None,
+        )
+        bare_count[name] += 1
+        bare_params[name] |= pnames
+        if owner:
+            owned_count[(owner, name)] += 1
+            owned_params[(owner, name)] |= pnames
+
+# A named argument must sit right after `(` or `,`, and its `=` must not be the first
+# half of `==`. Without those guards the pattern also matches parameter defaults in
+# declarations and comparisons passed positionally (`indexAlpha(p, s, i, j1, refLane == lane)`).
+NAMED_ARG = re.compile(r"(?<=[(,])\s*([A-Za-z_]\w*)\s*=(?!=)")
+# Bounded window: slicing the whole prefix per match was O(n^2) and made the audit take
+# 44 s. No argument list in this repo comes close to this many characters.
+LOOKBACK = 4000
+CALLEE = re.compile(r"(?:(?P<qual>[A-Za-z_]\w*)\s*\.\s*)?(?P<fn>[A-Za-z_]\w*)\s*$")
+
+# Repo-declared functions sharing a name with a stdlib member that takes named arguments
+# of its own: `String.contains(other, ignoreCase = true)` is correct stdlib, and without
+# types it cannot be told apart from this repo's own `contains(key)`.
+STDLIB_NAME_COLLISIONS = {
+    "contains", "copy", "equals", "hashCode", "toString", "format", "split", "replace",
+    "substring", "compareTo", "matches", "get", "set", "add", "remove", "put", "of",
+    "from", "parse", "run", "let", "apply", "also", "filter", "map", "forEach", "with",
+    "require", "check", "invoke", "close", "open", "read", "write", "joinToString",
+}
+
+for path, text in stripped.items():
+    newlines = [i for i, ch in enumerate(text) if ch == "\n"]
+    for m in NAMED_ARG.finditer(text):
+        arg = m.group(1)
+        window = text[max(0, m.start() - LOOKBACK):m.start()].rstrip()
+        # Walk back to the unmatched `(` that opens this argument list.
+        depth, i = 0, len(window) - 1
+        while i >= 0:
+            ch = window[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    break
+                depth -= 1
+            i -= 1
+        if i < 0:
+            continue
+        cm = CALLEE.search(window[:i])
+        if not cm:
+            continue
+        fn, qual = cm.group("fn"), cm.group("qual")
+        if fn in STDLIB_NAME_COLLISIONS:
+            continue
+        # Only judge a call whose target is unambiguous: qualified when the receiver is
+        # a type this repo declares, otherwise a name declared exactly once.
+        if qual and owned_count.get((qual, fn), 0) == 1:
+            allowed = owned_params[(qual, fn)]
+        elif not qual and bare_count.get(fn, 0) == 1:
+            allowed = bare_params[fn]
+        else:
+            continue
+        if arg in allowed:
+            continue
+        line_no = bisect.bisect_right(newlines, m.start()) + 1
+        target = f"{qual}.{fn}" if qual else fn
+        errors.append(
+            f"{rel(path)}:{line_no}: `{target}(... {arg} = ...)` -- no parameter `{arg}`; "
+            f"declared parameters are {sorted(allowed)}"
+        )
 
 # ------------------------------------------------------------- report
 

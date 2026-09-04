@@ -31,9 +31,15 @@ class VaultJsonCollection<T>(
     private fun readLocked(): MutableList<T> {
         cache?.let { return it }
         val json = vault.readEncryptedJson(path)
-        val items = json?.getAsJsonArray(arrayKey)?.mapNotNull { element ->
-            if (element.isJsonObject) toItem(element.asJsonObject) else null
-        }?.toMutableList() ?: mutableListOf()
+        // An explicit loop rather than `mapNotNull { }.toMutableList()`: T is an
+        // unbounded type parameter here, and chaining mapNotNull (whose receiver is
+        // Iterable<T?> and whose result type is bounded `R : Any`) into toMutableList
+        // makes the compiler infer MutableList<T? & Any>, which will not assign to
+        // MutableList<T>. Building the list directly leaves nothing to infer.
+        val items: MutableList<T> = mutableListOf()
+        json?.getAsJsonArray(arrayKey)?.forEach { element ->
+            if (element.isJsonObject) items.add(toItem(element.asJsonObject))
+        }
         cache = items
         return items
     }

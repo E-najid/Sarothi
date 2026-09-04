@@ -277,10 +277,14 @@ class SarothiAgent(
                 ?.let { stores.conversations.tail(it, HISTORY_MESSAGES) }
                 ?: emptyList()
 
-            if (activeConversationId != null) {
+            // Captured in a local val: activeConversationId is a `var`, and Kotlin
+            // will not smart-cast a mutable property inside a lambda, so the null
+            // check above did not make it non-null at the call site.
+            val requestConversationId = activeConversationId
+            if (requestConversationId != null) {
                 runCatching {
                     stores.conversations.append(
-                        activeConversationId,
+                        requestConversationId,
                         ChatMessage(ChatRole.USER, request, Instant.now().toString(), null, null),
                     )
                 }.onFailure { Log.w(TAG, "Could not record the request", it) }
@@ -425,15 +429,6 @@ class SarothiAgent(
             }
 
             return if (cancelled.get()) finishCancelled() else finishFailed("The task was interrupted.")
-        }
-
-        private sealed interface StepLoopResult {
-            data object ALL_DONE : StepLoopResult
-            data class NeedsReplan(val stepIntent: String, val reason: String) : StepLoopResult
-            data class Aborted(val reason: String) : StepLoopResult
-            data class WaitingForUser(val spec: UserQuestionSpec) : StepLoopResult
-            data object BUDGET_EXHAUSTED : StepLoopResult
-            data object CANCELLED : StepLoopResult
         }
 
         private suspend fun executeSteps(steps: List<PlanStep>, parser: PlanParser): StepLoopResult {
@@ -814,7 +809,10 @@ class SarothiAgent(
             )
         }
 
-        private suspend fun finishFailed(reason: String): AgentOutcome {
+        // Not private: run() calls this from the enclosing class when the task
+        // throws, and a private member of an inner class is not reachable from
+        // outside it. finishTimedOut() next to it is public for the same reason.
+        suspend fun finishFailed(reason: String): AgentOutcome {
             finalMessage = reason
             return conclude(
                 status = TaskStatus.FAILED,
@@ -956,7 +954,7 @@ class SarothiAgent(
                         TaskStatus.COMPLETED -> ActionOutcome.COMPLETED
                         TaskStatus.PARTIALLY_COMPLETED -> ActionOutcome.COMPLETED
                         TaskStatus.CANCELLED -> ActionOutcome.CANCELLED
-                        else -> ActionOutcome.FAILED,
+                        else -> ActionOutcome.FAILED
                     },
                     summary = finalMessage ?: request,
                     taskId = taskId,
@@ -1056,6 +1054,22 @@ class SarothiAgent(
             val current = _state.value ?: return
             publish(current.copy(log = (current.log + line).takeLast(LOG_LINES)))
         }
+    }
+
+    /**
+     * How one pass over a plan's steps ended.
+     *
+     * Declared on [SarothiAgent] rather than inside [TaskRun] because `TaskRun` is
+     * an `inner` class, and Kotlin forbids interface declarations there: a nested
+     * interface is implicitly static, and an inner class has no static members.
+     */
+    private sealed interface StepLoopResult {
+        data object ALL_DONE : StepLoopResult
+        data class NeedsReplan(val stepIntent: String, val reason: String) : StepLoopResult
+        data class Aborted(val reason: String) : StepLoopResult
+        data class WaitingForUser(val spec: UserQuestionSpec) : StepLoopResult
+        data object BUDGET_EXHAUSTED : StepLoopResult
+        data object CANCELLED : StepLoopResult
     }
 
     companion object {

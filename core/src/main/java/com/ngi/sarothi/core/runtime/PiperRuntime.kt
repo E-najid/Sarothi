@@ -96,9 +96,19 @@ data class SynthesisResult(
     val phonemeCount: Int,
     val elapsedMillis: Long,
 ) {
-    /** The 44-byte canonical header, so callers can slice [wav] without a magic number. */
+    /**
+     * The raw samples with the 44-byte canonical header removed, so callers can hand
+     * them straight to [android.media.AudioTrack] without a magic number of their own.
+     *
+     * Qualified as [PiperRuntime.WAV_HEADER_BYTES]: that constant sits in PiperRuntime's
+     * companion object and this is a separate top-level class, so the bare name does
+     * not resolve here. Written as a block body to keep the getter unambiguous.
+     */
     val pcm: ByteArray
-        get() = if (wav.size > WAV_HEADER_BYTES) wav.copyOfRange(WAV_HEADER_BYTES, wav.size) else ByteArray(0)
+        get() {
+            if (wav.size <= PiperRuntime.WAV_HEADER_BYTES) return ByteArray(0)
+            return wav.copyOfRange(PiperRuntime.WAV_HEADER_BYTES, wav.size)
+        }
 
     override fun equals(other: Any?): Boolean =
         other is SynthesisResult && wav.contentEquals(other.wav) && sampleRate == other.sampleRate
@@ -178,7 +188,9 @@ class PiperRuntime(
         )
 
         val modelFile = VaultModelFile.open(context, fileSystem, modelVaultPath, expectedSizeBytes)
-        val options = environment.createSessionOptions().apply {
+        // OrtEnvironment exposes no createSessionOptions() factory -- session options
+        // are constructed directly and then handed to createSession() below.
+        val options = ai.onnxruntime.OrtSession.SessionOptions().apply {
             // Intra-op parallelism follows the RAM policy: a 3 GB phone should not
             // have TTS competing with the orchestrator for cores.
             setIntraOpNumThreads(minOf(2, Runtime.getRuntime().availableProcessors()))

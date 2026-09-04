@@ -152,12 +152,23 @@ class VaultMemoryStore(vault: VaultManager) : MemoryStore {
                 .take(limit)
         }
 
+        /** One or more characters that are neither a Unicode letter nor a digit. */
+        private val NON_WORD_RUN = Regex("[^\\p{L}\\p{N}]+")
+
         private fun parseEpoch(iso: String): Long =
             runCatching { Instant.parse(iso).toEpochMilli() }.getOrDefault(0L)
 
-        /** Lowercased alphanumeric runs; keeps Bengali characters intact. */
+        /**
+         * Lowercased alphanumeric runs; keeps Bengali characters intact.
+         *
+         * Split on a Regex rather than a predicate: `String.split` has overloads for
+         * `Char`, `vararg String` and `Regex`, but **not** for `(Char) -> Boolean`, so
+         * the trailing-lambda form does not resolve. `\p{L}` is any Unicode letter,
+         * which includes the Bengali block, and `\p{N}` any Unicode digit -- using
+         * `isLetterOrDigit` semantics without giving up the split overload.
+         */
         fun tokenize(text: String): List<String> =
-            text.lowercase().split { it.isLetterOrDigit().not() }.filter { it.length > 1 }
+            text.lowercase().split(NON_WORD_RUN).filter { it.length > 1 }
     }
 }
 

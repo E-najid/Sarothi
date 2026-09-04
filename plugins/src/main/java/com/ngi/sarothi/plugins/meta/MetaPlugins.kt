@@ -577,7 +577,7 @@ class VaultStatusPlugin : Plugin {
                 PluginAvailability.unavailable(
                     "No vault folder has been chosen yet, so Sarothi has nowhere to keep memories, " +
                         "logs or models.",
-                    fix = "Open Sarothi and choose a folder (internal storage or SD card).",
+                    fixAction = "Open Sarothi and choose a folder (internal storage or SD card).",
                 ),
             )
         }

@@ -32,7 +32,9 @@ data class JsonSchema(
 
         data class Text(
             override val description: String,
-            val enum: List<String>? = null,
+            // Fully qualified: inside `Property`, the bare name `List` resolves to
+            // the nested Property.List below, which is not generic.
+            val enum: kotlin.collections.List<String>? = null,
             val default: String? = null,
             val maxLength: Int? = null,
         ) : Property("string")
@@ -211,7 +213,8 @@ data class JsonSchema(
         val text = when {
             raw.isJsonPrimitive && raw.asJsonPrimitive.isString -> raw.asString
             raw.isJsonPrimitive -> raw.asString
-            raw.isJsonArray && raw.size() == 1 && raw[0].isJsonPrimitive -> raw[0].asString
+            raw.isJsonArray && raw.asJsonArray.size() == 1 &&
+                raw.asJsonArray[0].isJsonPrimitive -> raw.asJsonArray[0].asString
             else -> return Coercion.Bad("'$name' must be a string, got ${describe(raw)}")
         }
         val coerced = if (!raw.isJsonPrimitive || !raw.asJsonPrimitive.isString) {
@@ -237,7 +240,8 @@ data class JsonSchema(
             raw.isJsonPrimitive && raw.asJsonPrimitive.isNumber -> raw.asLong
             raw.isJsonPrimitive && raw.asJsonPrimitive.isString -> raw.asString.trim().toLongOrNull()
                 ?: return Coercion.Bad("'$name' must be a whole number, got \"${raw.asString}\"")
-            raw.isJsonArray && raw.size() == 1 && raw[0].isJsonPrimitive -> raw[0].asLong
+            raw.isJsonArray && raw.asJsonArray.size() == 1 &&
+                raw.asJsonArray[0].isJsonPrimitive -> raw.asJsonArray[0].asLong
             else -> return Coercion.Bad("'$name' must be a whole number, got ${describe(raw)}")
         }
         property.minimum?.let { if (value < it) return Coercion.Bad("'$name' must be at least $it, got $value") }

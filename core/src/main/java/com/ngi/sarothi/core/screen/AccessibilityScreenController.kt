@@ -225,7 +225,14 @@ class AccessibilityScreenController(
                         focused = info.isFocused,
                         selected = info.isSelected,
                         visibleToUser = info.isVisibleToUser,
-                        roleDescription = runCatching { info.roleDescription?.toString()?.takeIf { it.isNotBlank() } }.getOrNull(),
+                        // AccessibilityNodeInfo has no public getRoleDescription(): that
+                        // accessor lives on AndroidX' AccessibilityNodeInfoCompat, which
+                        // reads this exact extras key. getExtras() is public since API 19
+                        // and is documented as never null.
+                        roleDescription = runCatching {
+                            info.extras.getCharSequence(ROLE_DESCRIPTION_KEY)
+                                ?.toString()?.takeIf { it.isNotBlank() }
+                        }.getOrNull(),
                     ),
                     info = info,
                 )
@@ -849,6 +856,17 @@ class AccessibilityScreenController(
     )
 
     companion object {
+        /**
+         * Extras key the framework stores a node's custom role description under.
+         * This is what `AccessibilityNodeInfoCompat.getRoleDescription()` reads; the
+         * framework class itself exposes no accessor for it.
+         */
+        private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
+
+        /** @hide/@SystemApi in `android.provider.Settings`; the string is stable. */
+        private const val ACTION_ACCESSIBILITY_DETAILS_SETTINGS =
+            "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
+
         private const val MAX_NODES = 600
         private const val MIN_USEFUL_NODES = 2
         private const val MAX_ANCESTOR_HOPS = 6
@@ -907,8 +925,14 @@ object SarothiAccessibility {
         val component = componentFor(context)
         if (component == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return settingsIntent()
         return runCatching {
-            Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
-                putExtra(Intent.EXTRA_ACCESSIBILITY_COMPONENT_NAME, component.flattenToString())
+            // ACTION_ACCESSIBILITY_DETAILS_SETTINGS is @SystemApi/@hide, so the constant
+            // is not in the public SDK and cannot be referenced at compile time. The
+            // action string itself is stable and is what AOSP Settings resolves; the
+            // component goes in the public Intent.EXTRA_COMPONENT_NAME as a flattened
+            // string. If any OEM build refuses it, the runCatching falls back to the
+            // general accessibility list rather than crashing.
+            Intent(ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
+                putExtra(Intent.EXTRA_COMPONENT_NAME, component.flattenToString())
             }
         }.getOrElse { settingsIntent() }
     }

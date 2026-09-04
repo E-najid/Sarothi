@@ -251,7 +251,7 @@ class PluginManager(
                 PluginResult.Unavailable(
                     PluginAvailability.unavailable(
                         "'$name' has been switched off in Sarothi's settings.",
-                        fix = "Settings → Plugins → ${plugin.name} → Enable",
+                        fixAction = "Settings → Plugins → ${plugin.name} → Enable",
                     ),
                 ),
             )
@@ -382,7 +382,7 @@ class PluginManager(
                 PluginResult.Unavailable(
                     PluginAvailability.unavailable(
                         native.message ?: "The native runtime is unavailable.",
-                        fix = "Run scripts/setup_native.sh and rebuild Sarothi.",
+                        fixAction = "Run scripts/setup_native.sh and rebuild Sarothi.",
                     ),
                 )
             } catch (notImplemented: NotImplementedError) {

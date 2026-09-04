@@ -133,14 +133,17 @@ class Blake2b(
 
         for (round in 0 until ROUNDS) {
             val s = SIGMA[round]
-            mix(v[0], v[4], v[8], v[12], m[s[0]], m[s[1]])
-            mix(v[1], v[5], v[9], v[13], m[s[2]], m[s[3]])
-            mix(v[2], v[6], v[10], v[14], m[s[4]], m[s[5]])
-            mix(v[3], v[7], v[11], v[15], m[s[6]], m[s[7]])
-            mix(v[0], v[5], v[10], v[15], m[s[8]], m[s[9]])
-            mix(v[1], v[6], v[11], v[12], m[s[10]], m[s[11]])
-            mix(v[2], v[7], v[8], v[13], m[s[12]], m[s[13]])
-            mix(v[3], v[4], v[9], v[14], m[s[14]], m[s[15]])
+            // Column step, then diagonal step. [mix] takes the state array and four
+            // *indices* rather than four values: Kotlin has no by-reference Long, so
+            // passing v[n] would mix copies and write the result nowhere.
+            mix(v, 0, 4, 8, 12, m[s[0]], m[s[1]])
+            mix(v, 1, 5, 9, 13, m[s[2]], m[s[3]])
+            mix(v, 2, 6, 10, 14, m[s[4]], m[s[5]])
+            mix(v, 3, 7, 11, 15, m[s[6]], m[s[7]])
+            mix(v, 0, 5, 10, 15, m[s[8]], m[s[9]])
+            mix(v, 1, 6, 11, 12, m[s[10]], m[s[11]])
+            mix(v, 2, 7, 8, 13, m[s[12]], m[s[13]])
+            mix(v, 3, 4, 9, 14, m[s[14]], m[s[15]])
         }
 
         for (i in 0 until 8) h[i] = h[i] xor v[i] xor v[i + 8]
@@ -179,11 +182,20 @@ class Blake2b(
         private val EMPTY_KEY = ByteArray(0)
         private const val ALL_BITS = -1L // 0xFFFFFFFFFFFFFFFF
 
-        /** SHA-512 initial hash values, reused by BLAKE2b as the IV. */
+        /**
+         * SHA-512 initial hash values, reused by BLAKE2b as the IV (RFC 7693 §2.6).
+         *
+         * Three of the eight are written as negative literals. Java reinterprets a
+         * hex `long` whose top bit is set as negative; **Kotlin does not** — it
+         * rejects `0xBB67AE8584CAA73BL` as "value out of range" because the literal
+         * exceeds `Long.MAX_VALUE`. The two's-complement negation is the same 64
+         * bits, and the unsigned form each one came from is kept in the comment so
+         * the table stays diffable against the specification.
+         */
         private val IV = longArrayOf(
-            0x6A09E667F3BCC908L, 0xBB67AE8584CAA73BL,
-            0x3C6EF372FE94F82BL, 0xA54FF53A5F1D36F1L,
-            0x510E527FADE682D1L, 0x9B05688C2B3E6C1FL,
+            0x6A09E667F3BCC908L, -0x4498517A7B3558C5L, // 0xBB67AE8584CAA73B
+            0x3C6EF372FE94F82BL, -0x5AB00AC5A0E2C90FL, // 0xA54FF53A5F1D36F1
+            0x510E527FADE682D1L, -0x64FA9773D4C193E1L, // 0x9B05688C2B3E6C1F
             0x1F83D9ABFB41BD6BL, 0x5BE0CD19137E2179L,
         )
 
