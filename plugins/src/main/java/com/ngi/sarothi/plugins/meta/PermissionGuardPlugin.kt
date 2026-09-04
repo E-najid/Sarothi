@@ -45,7 +45,6 @@ class PermissionGuardPlugin : Plugin {
                 description = "Open this settings screen instead of reporting.",
                 enum = listOf(
                     PermissionGuard.ACCESSIBILITY,
-                    PermissionGuard.NOTIFICATION_LISTENER,
                     PermissionGuard.BATTERY_OPTIMISATION,
                     PermissionGuard.DRAW_OVER,
                     PermissionGuard.ALL_FILES,

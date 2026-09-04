@@ -21,7 +21,8 @@ Each step runs through a permission + safety gate, and is written to task_histor
 
 The whole app is written and building: **31,200 lines of Kotlin across 132 source
 files** in three modules, plus the JNI bridge to llama.cpp / whisper.cpp / espeak-ng,
-plus **176 unit tests** in 10 more files. CI assembles two APKs on every push.
+plus **186 unit tests** in 11 more files and **58 instrumentation tests** in 6 more.
+CI assembles two APKs on every push and runs the device suite on an emulator.
 
 | Module | State |
 |---|---|
@@ -30,9 +31,10 @@ plus **176 unit tests** in 10 more files. CI assembles two APKs on every push.
 | `:app` — Compose UI (10 screens), DI graph, manifest (18 files, 3,200 lines) | ✅ Implemented |
 | `core/src/main/cpp` — JNI bridge (llama.cpp, whisper.cpp, espeak-ng) | ✅ Implemented |
 | `.github/workflows/build.yml` — CI | ✅ Implemented |
-| Unit tests — `:core` and `:plugins`, JVM-only | ✅ 176 passing |
+| Unit tests — `:core` and `:plugins`, JVM-only | ✅ 186 |
+| Instrumentation tests — `:core` and `:app`, on an emulator | ✅ 58 written; the `instrumented` job runs them |
 | Gradle wrapper (`gradlew`, `gradle-wrapper.jar`) | ❌ Not committed (binary) |
-| `scripts/build_espeak_ng.sh`, `docs/`, `LICENSE` | ❌ Not yet written |
+| `scripts/build_espeak_ng.sh`, `docs/` | ❌ Not yet written |
 
 CI produces `app-arm64-v8a-debug.apk` (about 65 MB) and `app-armeabi-v7a-debug.apk`
 (about 51 MB); see [Continuous integration](#continuous-integration). Nothing in this
@@ -42,13 +44,14 @@ themselves unavailable at runtime rather than returning fake results, and
 
 ## Continuous integration
 
-`.github/workflows/build.yml` runs four jobs:
+`.github/workflows/build.yml` runs five jobs:
 
 | Job | What it does | Blocking |
 |---|---|---|
 | `verify` | Argon2id vs RFC 9106, delimiter balance, build audit, model-catalogue self-consistency. No JDK or Android SDK. | ✅ |
 | `build` | `:core:assembleDebug :plugins:assembleDebug :app:assembleDebug` on Gradle 8.11.1 / JDK 17, then `:core:testDebugUnitTest :plugins:testDebugUnitTest`, then the two per-ABI APKs. The test step **counts the tests that ran and fails on zero** — see [Unit tests](#unit-tests). | ✅ |
-| `lint` | Android lint on the library modules. | ⚠️ non-blocking, but a *separate visible check*, not a swallowed `continue-on-error` step |
+| `lint` | Android lint on the library modules. | ✅ blocking, and a *separate visible check*, not a swallowed `continue-on-error` step. It was non-blocking while the four lint errors were being worked through; that count reached zero, so it came off. Remaining issues are warnings, listed by check id in the job summary. |
+| `instrumented` | Boots an API 34 x86_64 emulator with KVM enabled, installs the `:core` and `:app` test APKs, and runs `connectedDebugAndroidTest` for every module that has an `src/androidTest` set. Counts what executed and fails on zero. | ✅ |
 | `gradle-wrapper` | Regenerates the uncommitted wrapper and publishes it as an artifact. | — |
 
 Two things shape the workflow and are worth knowing before you run it:
@@ -85,7 +88,7 @@ check that cannot fail is not a check.
 | `verify_argon2_rfc9106.py` | Argon2id in `core/…/crypto/Argon2.kt` against the official RFC 9106 vectors | **14/14 pass**, final tag `0d640df5…e659` |
 | `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists | **0 errors**, 1 known-gap warning |
 | `verify_model_catalog.py --offline` | All 9 catalogue pins are well-formed, uniquely keyed, and locatable upstream | **OK** |
-| `check_kotlin_braces.py` | Delimiter balance across all 147 Kotlin sources (142 `.kt`, 5 `.kts`) | **0 unbalanced** |
+| `check_kotlin_braces.py` | Delimiter balance across all 154 Kotlin sources (149 `.kt`, 5 `.kts`) | **0 unbalanced** |
 
 Argon2id is the one piece of cryptography provable without a device, which matters
 because the whole vault rests on it: two independent salts derive the AES key and
@@ -99,22 +102,27 @@ The scripts above run without a JDK, so they also run for a reviewer who has onl
 cloned the repository. Compilation, unit tests and lint need a runner, and CI has
 one; see the next section for what the tests do and do not cover.
 
-**Not verified: anything that needs a device.** There are no instrumentation tests and
-no emulator in CI, so the accessibility service, MediaProjection capture, the native
-model runtimes, model downloads and every Compose screen are compiled and reasoned
-about but never executed by a machine. What CI proves about them is that they type-check,
-that lint accepts them, and that the code paths which cannot work on a given device
-report themselves unavailable instead of returning a fake result.
+**What a machine still has not run.** The `instrumented` job covers the platform-facing
+half of the app on a real emulator — see [Instrumentation tests](#instrumentation-tests).
+What no job can reach is anything needing hardware, a human, or a network the runner does
+not have: the native model runtimes (that job compiles no JNI, so `NativeBridge` reports
+the runtimes unavailable and the tests assert that it *says so* rather than guessing);
+a MediaProjection consent dialog; a real resumable model download; an SD-card vault
+chosen through SAF; biometric unlock; and the accessibility service *bound*. The device
+tests prove the service is declared, that Settings can find it, and that every capability
+degrades honestly while it is not connected — only a person turning it on can prove the
+tree it reads.
 
 ### Unit tests
 
-176 tests in 10 files, all JVM-only: no device, no emulator, no Robolectric, no network.
+186 tests in 11 files, all JVM-only: no device, no emulator, no Robolectric, no network.
 They cover the logic whose wrong answer is invisible at the moment it happens — a
 schedule firing at the wrong time, a vault key that is not the one the RFC specifies, a
 plan silently losing a step.
 
 | Suite | Tests | What it pins down |
 |---|---|---|
+| `crypto/MasterKeyManagerTest` | 10 | The passphrase-to-key wiring: `unlock()` must return the key an *independent* derivation of the same passphrase and salt produces, not merely a key that happens to open the vault; that the key is not the one a consumed — all-NUL — passphrase derives; that creation, unlock, rekey and a `manifest.json` round trip all agree; that two passphrases of the same length differ; the backoff window blocking even the correct passphrase; and that every entry point wipes the array it was handed |
 | `crypto/CryptoTest` | 15 | Argon2id against the RFC 9106 §5.3 vector, so key derivation is checked against a published answer rather than against itself; AES-256-GCM round-trip, nonce freshness, wrong key, tampered ciphertext, AAD binding; the sealed-file format's header and path binding, truncation, unknown version, and that no plaintext survives into the bytes |
 | `runtime/RamPolicyTest` | 24 | What a device with a given amount of RAM may ask for: the tier boundaries, so a 3 GB phone lands where the documentation says whether it reports 3072 MiB or the ~2800 MiB a real one reports after kernel reservations; the per-tier step and model-call budgets and the invariants they have to satisfy (a plan must fit its task, a generation must fit the task, no ceiling may be zero); context and batch sizes; the vision model never staying resident on a constrained device; the load refusal that stands between a new model and a system-wide low-memory kill; and the persisted tier ordinals, which a reordered enum would silently change the meaning of |
 | `crypto/LockoutTrackerTest` | 12 | The brute-force backoff: three free attempts, then a wait that doubles to a 24-hour cap, a shift that cannot overflow into a negative wait, an elapsed window that keeps the count so the next failure escalates instead of restarting, and state that survives a new tracker over the same store -- which is what a force-stop must not be able to reset |
@@ -132,26 +140,83 @@ because a Gradle test task with no matching sources succeeds — and the pull-re
 comment reported that the commit "passes its unit tests". `scripts/count_unit_tests.py`
 mines the JUnit XML so the claim can only be made when something actually ran.
 
-**What writing them found.** Five real defects, none of them visible by reading:
+**What writing them found.** Six real defects, none of them visible by reading:
 
-1. `ScheduledTask.computeNextRun()` treated `HOURLY` as "matches unconditionally" on the
+1. **The vault's encryption key did not depend on the passphrase.** `unlock()` verified the
+   passphrase and then derived the key from the *same array* — and verification consumes it
+   (`PasswordBytes.withPasswordBytes` wipes the `CharArray` in a `finally` block, which is
+   the right contract for a call that is the last to use it). So the derivation encoded a
+   run of NUL characters and returned a key determined by the passphrase's *length* and the
+   salts in `manifest.json`, both of which sit in the clear on the SD card. Nothing
+   complained: `createFreshVault()` made the identical mistake (`createSecurity()` then
+   `deriveKey()` over one array), so both sides agreed and every vault opened every time —
+   while the passphrase protected nothing. Fixed by deriving both the verifier and the key
+   inside a single encoding (`unlock()`), and by `createKeyMaterial()` returning the
+   protection record and the key from one call (`createFreshVault()`). The comment in
+   `unlock()` that said "verifyPassword only wipes its own encoded copy" was the bug's
+   footprint: it was wrong, and it was the reason the composition looked safe.
+2. `ScheduledTask.computeNextRun()` treated `HOURLY` as "matches unconditionally" on the
    first pass through a loop whose candidate had already been seeded from `timeOfDay`, so
    an hourly task fired once a day at 09:00 and the `plusHours(1)` step below it was
    unreachable dead code — while the schedule screen told the user "runs at the top of
    every hour".
-2. `JsonSchema.fromJson()` dropped constraints that `toJson()` wrote: a text property's
+3. `JsonSchema.fromJson()` dropped constraints that `toJson()` wrote: a text property's
    `maxLength` and a list property's default. A schema that travelled through JSON stopped
    enforcing a limit it still advertised.
-3. Both hand-rolled JSON extractors stopped scanning at a brace that never closed — prose
+4. Both hand-rolled JSON extractors stopped scanning at a brace that never closed — prose
    like "I will use the {tool you named" — and reported no JSON at all, discarding the
    usable plan in the same reply. There is now one implementation, `core/util/JsonReply.kt`,
    shared by the plan parser and the vision describer, whose private copy was weaker still:
    it tried only the first `{`, with no fence stripping and no trailing-comma retry.
-4. A reply that was a bare array of step objects lost the whole task. The scanner returned
+5. A reply that was a bare array of step objects lost the whole task. The scanner returned
    the array's first element, which has no kind and no steps, so it parsed as an `ANSWER`
    carrying no text, and every later step was dropped.
-5. `extractObject` stopped at the first parseable span whatever it was, so a reply opening
+6. `extractObject` stopped at the first parseable span whatever it was, so a reply opening
    with a citation — "Sources: [1] and [2]." — reported no object at all.
+
+### Instrumentation tests
+
+58 tests in 6 files that only mean something on a device, run by the `instrumented` job
+on an API 34 x86_64 emulator that boots cold every time — so "fresh install: no vault, no
+models, no permissions" is a fact about the device rather than an assumption left over
+from a previous run.
+
+| Suite | Tests | What it pins down |
+|---|---|---|
+| `core/crypto/SecretStoreInstrumentedTest` | 9 | The Android Keystore behind `EncryptedSharedPreferences`: every supported type round-trips, a second store over the same device sees what the first wrote, the `LockoutStore` seam reaches the same entries, and — read back off disk — neither the secret nor the name indexing it appears in the clear |
+| `core/crypto/VaultKeyDerivationInstrumentedTest` | 15 | The vault's whole promise, at the production parameters (12 MiB / 3 iterations / p=1): the two salts are independent, the verifier hash proves a passphrase but cannot open a sealed file, a sealed file is bound to its path, one flipped bit is detected, re-sealing changes the ciphertext, the format survives real storage, a password change re-keys the vault, the backoff blocks even the *correct* passphrase while its window is open and survives a process restart, every call wipes the `CharArray` it was handed, and — checked against a derivation done outside the code under test — the key `unlock()` returns really is the one this passphrase produces at 12 MiB / 3 iterations |
+| `core/screen/HonestDegradationInstrumentedTest` | 9 | The rule the rest of the project is built on: with no service bound and no capture consent, `availability()` reports every capability missing with a reason, all twelve screen actions return `Unavailable` and none returns `Done`, a snapshot says it cannot act instead of handing over an empty screen, and `NativeBridge` states exactly one of loaded or why not. `launchApp` is the positive control — it works without the service, so "everything reports unavailable" cannot pass against a build that does nothing |
+| `app/ManifestDeclarationInstrumentedTest` | 10 | What the *installed APK* actually declares, read back through the platform: the accessibility service carries `BIND_ACCESSIBILITY_SERVICE` and answers the intent Settings queries; its config grants window content, gestures and notification events; the `settingsActivity` it advertises resolves to a real exported activity; the foreground services carry the types Android 14 enforces; the boot receiver is registered; backup is off; and every permission a plugin needs is in the manifest, because `requestPermissions()` for an undeclared permission is refused forever and silently |
+| `app/safety/PermissionGuardInstrumentedTest` | 9 | The guard against a real `PackageManager` over all 78 plugins: every verdict is internally consistent and names its plugin, every special access is something the user can actually reach, no plugin is gated on a switch this APK cannot appear in, every key in the plugin/access map is a real plugin, dangerous permissions are all missing on a fresh install and the plugins needing them are refused, and every permission has a plain-language reason in English and Bangla |
+| `app/ui/MainActivityNavigationTest` | 6 | A cold start builds the graph and renders instead of crashing; all eleven screens compose; the Task screen on a fresh install shows why it cannot run and exposes no text field that accepts input; the Models screen shows the memory tier this device really has; and all seven sub-screens open, render their own content, and come back |
+
+The job counts what executed the way the JVM suites do — `count_unit_tests.py --connected`
+mines the instrumentation XML and fails on zero, because `connectedAndroidTest` exits
+successfully when there was no device to talk to. A red run re-emits every failing test as
+a check annotation with the file and line of the `@Test` method
+(`scripts/report_instrumented_failures.py`), since the emulator that failed no longer
+exists by the time anyone reads the log.
+
+**What writing them found.** Two defects no JVM test and no lint check could see, plus the
+vault-key defect described under [Unit tests](#unit-tests) — which was found while writing
+this suite and is now caught in both places, at the production parameters on a device and
+in seconds on every push:
+
+1. **`read_notifications` and the notification rules could never run.** `PermissionGuard`
+   gated them on a `notification_listener` special access, but no manifest in the project
+   declares a `NotificationListenerService` — notifications reach Sarothi through
+   `SarothiAccessibilityService` → `NotificationFeed`, which is exactly what
+   `read_notifications`' own `availability()` checks. So the guard reported a permanently
+   missing access, the Access screen offered a settings list Sarothi never appears in, and
+   `permission_guard`'s full report could never say `all_clear`. The same map had a
+   `"notification_rules"` key matching no plugin at all, so the check it appeared to
+   perform was never performed. Both plugins are now gated on the accessibility service
+   that actually feeds them, and the ungrantable entry is gone.
+2. **The accessibility deep link named a class that does not exist.**
+   `android:settingsActivity` said `com.ngi.sarothi.ui.MainActivity`; the real activity is
+   `com.ngi.sarothi.app.ui.MainActivity`. The gear button Settings shows next to Sarothi
+   pointed at nothing. A manifest string is not type-checked, and nothing else in the
+   build looks at it.
 
 ### Defects found and fixed by the audit
 
@@ -370,12 +435,21 @@ is still outstanding:
 3. **Gradle wrapper** — dispatch the `gradle-wrapper` CI job and commit the four
    artifact files, or run `gradle wrapper --gradle-version 8.11.1` locally.
 4. **`docs/`** — build instructions, vault/SD-card portability guide, threat model.
-5. **`LICENSE`** — the project is intended to be open source but no licence file
-   has been chosen or added yet.
-6. **Instrumentation tests.** The 176 unit tests are JVM-only, so nothing that needs a
-   device is executed by a machine: the accessibility service, MediaProjection capture,
-   the native model runtimes, resumable downloads and all ten Compose screens compile and
-   pass lint but are untested at runtime. Testing them needs an emulator in CI.
+5. ~~**`LICENSE`**~~ — **added: Apache License 2.0.** See [Licence](#licence).
+6. ~~**Instrumentation tests**~~ — **written: 58 tests in 6 files, run by the
+   `instrumented` job on an emulator.** See [Instrumentation tests](#instrumentation-tests)
+   for what each suite covers and the two defects writing them found. What an emulator
+   still cannot cover is listed under
+   [What is verified](#what-is-verified): the native model
+   runtimes, a MediaProjection consent dialog, a real model download, an SD-card vault,
+   biometric unlock, and the accessibility service actually bound and reading a live tree.
+   Those need a physical phone and a person.
+7. **Rotating the vault passphrase.** `MasterKeyManager.changePassword()` produces a new
+   protection record and is tested, but nothing calls it: changing a passphrase also means
+   re-sealing every file in `/memories/` with the key the new passphrase derives and
+   rewriting `manifest.json`, and that operation is not written. The vault screen therefore
+   offers no "change passphrase" button rather than one that would quietly leave the
+   memories encrypted under the old key.
 
 ---
 
@@ -413,4 +487,22 @@ plugins/src/main/java/com/ngi/sarothi/plugins/
 
 ## Licence
 
-Open source. See `LICENSE` (to be added).
+Apache License 2.0 — see [`LICENSE`](LICENSE).
+
+    Copyright 2026 Sarothi contributors
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+The models this app downloads are not part of the Work and carry their own upstream
+licences; the native runtime dependencies pinned in `scripts/setup_native.sh`
+(llama.cpp, whisper.cpp, espeak-ng) are fetched at build time and likewise keep theirs.

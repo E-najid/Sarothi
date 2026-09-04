@@ -143,18 +143,6 @@ class PermissionGuard(private val context: Context) {
         )
         add(
             SpecialAccess(
-                id = NOTIFICATION_LISTENER,
-                displayName = "Notification access",
-                granted = notificationListenerEnabled(),
-                purpose = "Lets notification-triggered rules read incoming notifications with their " +
-                    "full text, and lets Sarothi dismiss or reply to one.",
-                consequence = "Without it, notification rules fall back to the accessibility " +
-                    "service's notification events, which carry less detail and can be missed.",
-                settingsIntent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
-            ),
-        )
-        add(
-            SpecialAccess(
                 id = BATTERY_OPTIMISATION,
                 displayName = "Ignore battery optimisation",
                 granted = ignoringBatteryOptimisations(),
@@ -234,19 +222,6 @@ class PermissionGuard(private val context: Context) {
         ) ?: return false
         val needle = component.flattenToString().lowercase()
         return enabled.split(':').any { it.trim().lowercase() == needle }
-    }
-
-    fun notificationListenerEnabled(): Boolean {
-        val enabled = Settings.Secure.getString(
-            context.contentResolver,
-            "enabled_notification_listeners",
-        ) ?: return false
-        return enabled.split(':').any { entry ->
-            val component = runCatching {
-                android.content.ComponentName.unflattenFromString(entry.trim())
-            }.getOrNull()
-            component?.packageName == context.packageName
-        }
     }
 
     fun ignoringBatteryOptimisations(): Boolean {
@@ -333,7 +308,6 @@ class PermissionGuard(private val context: Context) {
 
     companion object {
         const val ACCESSIBILITY = "accessibility"
-        const val NOTIFICATION_LISTENER = "notification_listener"
         const val BATTERY_OPTIMISATION = "battery_optimisation"
         const val DRAW_OVER = "draw_over_apps"
         const val ALL_FILES = "all_files_access"
@@ -358,8 +332,14 @@ class PermissionGuard(private val context: Context) {
             "open_app" to setOf(ACCESSIBILITY),
             "screenshot_ocr" to setOf(ACCESSIBILITY),
             "screen_agent" to setOf(ACCESSIBILITY),
-            "notification_rules" to setOf(NOTIFICATION_LISTENER),
-            "read_notifications" to setOf(NOTIFICATION_LISTENER),
+            // Notification events reach Sarothi through the accessibility service
+            // (SarothiAccessibilityService -> NotificationFeed), so that is the access
+            // these two depend on. Sarothi declares no NotificationListenerService, and
+            // listing one here would gate them on a switch the user can never turn on.
+            "read_notifications" to setOf(ACCESSIBILITY),
+            // A rule that can never see a notification would be a silent no-op, so the
+            // guard says so at creation time instead of after the user has written one.
+            "add_notification_rule" to setOf(ACCESSIBILITY),
             "app_usage" to setOf(USAGE_ACCESS),
             "set_brightness" to setOf(WRITE_SETTINGS),
             "set_screen_timeout" to setOf(WRITE_SETTINGS),

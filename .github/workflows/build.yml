@@ -68,6 +68,10 @@ env:
   BUILD_TOOLS: "35.0.0"
   NDK_VERSION: "27.0.12077973"
   CMAKE_VERSION: "3.22.1"
+  # The device suite runs on this system image. Pinned because an emulator level is a
+  # compatibility claim: API-level guards in the code are only exercised against the
+  # level that is actually booted.
+  EMULATOR_API: "34"
   # Keeps AGP from phoning home for analytics on a shared runner.
   DO_NOT_TRACK: "1"
 
@@ -621,6 +625,164 @@ jobs:
             core/build/reports/lint-results-*.xml
             plugins/build/reports/lint-results-*.html
             plugins/build/reports/lint-results-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ------------------------------------------------------------------ device tests
+  # Every other job here runs on the JVM or inside the SDK's own tooling. This one is the
+  # only place Sarothi is actually executed: an emulator boots, the test APKs install, and
+  # the code that depends on a real platform runs for real -- the Android Keystore behind
+  # SecretStore, Argon2id at its production parameters, the PackageManager's view of the
+  # merged manifest, and the Compose UI on a cold start with no vault and no models.
+  #
+  # Blocking, for the same reason lint is: a device suite that is allowed to fail is a
+  # device suite nobody reads. The failures it catches are the ones nothing else here can
+  # see. A service that is not declared never binds, an accessibility deep link naming the
+  # wrong class opens an empty settings screen, and a preference file that is not actually
+  # encrypted still passes every JVM test in the repository.
+  instrumented:
+    name: Instrumentation tests (emulator)
+    runs-on: ubuntu-latest
+    # Boot is the long pole; the suites themselves take a few minutes. The budget exists so
+    # a hung emulator cannot hold a runner for the rest of the day.
+    timeout-minutes: 75
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          fi
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" "platform-tools" "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}" \
+            "emulator" "system-images;android-${EMULATOR_API};google_apis;x86_64"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "${{ env.GRADLE_VERSION }}"
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Enable KVM
+        # GitHub's Linux runners have /dev/kvm but leave it owned by root, so the emulator
+        # falls back to software acceleration and takes long enough to boot that the job can
+        # time out before a single test runs. This is what makes the device usable at all.
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Detect which modules have device tests
+        id: targets
+        # Derived from the source tree rather than listed by hand, so a module that grows an
+        # androidTest set joins the run without anyone having to remember this file.
+        run: |
+          set -euo pipefail
+          targets=""
+          for module in core plugins app; do
+            if [ -d "$module/src/androidTest" ]; then
+              targets="$targets :$module:connectedDebugAndroidTest"
+            fi
+          done
+          if [ -z "$targets" ]; then
+            echo "::error::no module has src/androidTest sources, so the device suite is empty"
+            exit 1
+          fi
+          targets="$(echo "$targets" | xargs)"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Instrumented targets: $targets"
+
+      - name: Run the suites on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.EMULATOR_API }}
+          arch: x86_64
+          target: google_apis
+          # Sarothi is built for a 3 GB phone. Giving the emulator less than that would make
+          # the memory-tier assertions measure the runner instead of the code.
+          ram-size: 3072M
+          disk-size: 8G
+          disable-animations: true
+          # -no-snapshot means every run boots cold, so "fresh install: no vault, no models,
+          # no permissions" is a fact about the device instead of an assumption inherited
+          # from whatever the previous run left behind.
+          emulator-options: -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader_indirect
+          script: |
+            set -uo pipefail
+            gradle --no-daemon --stacktrace --console=plain ${{ steps.targets.outputs.targets }} 2>&1 | tee instrumented.log
+            exit "${PIPESTATUS[0]}"
+
+      - name: Count what ran on the device
+        # connectedAndroidTest exits zero when there was no device to talk to and zero when
+        # nothing matched. This is the guard the JVM suites already have: the claim "the
+        # device tests pass" has to have a count behind it.
+        if: success()
+        run: |
+          set -uo pipefail
+          counts=$(python3 scripts/count_unit_tests.py --require-nonzero --connected)
+          status=$?
+          read -r total failed skipped <<< "$counts"
+          total="${total:-}"; failed="${failed:-}"; skipped="${skipped:-}"
+          if [ -z "$total" ] || [ -z "$failed" ] || [ -z "$skipped" ]; then
+            echo "::error::could not count the instrumentation results (counter said: $counts)"
+            exit 1
+          fi
+          {
+            echo "### Instrumentation tests"
+            echo
+            echo "**$total** executed on the emulator, **$failed** failed, **$skipped** skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed instrumentation test(s) failed"
+            exit 1
+          fi
+          echo "::notice::$total instrumentation tests ran on the emulator, $failed failed, $skipped skipped"
+
+      - name: Report device test failures
+        # Artifacts are served from blob storage that tooling often cannot reach, and a
+        # device failure is the one kind that cannot be reconstructed by reading a log --
+        # it happened on an emulator that no longer exists. The failing test names and
+        # messages go into the check annotations instead.
+        if: failure()
+        run: |
+          set -uo pipefail
+          python3 scripts/report_instrumented_failures.py -o instrumented-digest.md || true
+          if [ -f instrumented-digest.md ]; then
+            cat instrumented-digest.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f instrumented.log ]; then
+            {
+              echo
+              echo '```'
+              tail -n 60 instrumented.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instrumented-results
+          path: |
+            instrumented.log
+            instrumented-digest.md
+            */build/outputs/androidTest-results/**
+            */build/reports/androidTests/**
           if-no-files-found: ignore
           retention-days: 14
 

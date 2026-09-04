@@ -17,5 +17,12 @@
     android:canRetrieveWindowContent="true"
     android:description="@string/sarothi_accessibility_description"
     android:notificationTimeout="120"
-    android:settingsActivity="com.ngi.sarothi.ui.MainActivity"
+    <!--
+      The gear button Settings shows next to Sarothi in the accessibility list. It names
+      an activity in :app, which is the one deliberate upward reference from :core: the
+      attribute has to be a literal class name, and a resource reference would not resolve
+      when :core is built on its own. ManifestDeclarationInstrumentedTest fails the build
+      if this name ever stops matching a real exported activity.
+    -->
+    android:settingsActivity="com.ngi.sarothi.app.ui.MainActivity"
     android:summary="@string/sarothi_accessibility_summary" />

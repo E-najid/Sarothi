@@ -19,6 +19,8 @@ android {
         // are the ones those devices actually use. Anything else is dead weight in the
         // APK and in memory.
         resourceConfigurations += listOf("en", "bn")
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -101,4 +103,16 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    // Compose UI tests need the BOM on the androidTest classpath too, otherwise the
+    // ui-test artifacts have no version to resolve from.
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // Adds the ComponentActivity that createComposeRule() launches into the debug APK only.
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

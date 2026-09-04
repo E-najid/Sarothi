@@ -29,6 +29,11 @@ android {
         minSdk = 26
         consumerProguardFiles("consumer-rules.pro")
 
+        // Device tests live in core/src/androidTest and run on an emulator in CI.
+        // They cover what a JVM cannot: the Android Keystore, real Argon2id timings,
+        // and the honesty of the app when no accessibility service is connected.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         if (nativeSourcesReady) {
             externalNativeBuild {
                 cmake {
@@ -124,4 +129,9 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.junit)
+
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
