@@ -68,6 +68,14 @@ object PasswordBytes {
     /**
      * Runs [block] with the passphrase encoded, guaranteeing both the CharArray
      * and the derived byte copy are wiped even if [block] throws.
+     *
+     * **This consumes [password].** When it returns, every element is `'\u0000'`, so it
+     * must be the *last* thing the caller does with that array. Composing two calls that
+     * each use this helper over one array is the bug it is easiest to make here and the
+     * hardest to notice anywhere else: the second call encodes NUL characters instead of
+     * the passphrase and still produces a perfectly good-looking key. That is exactly what
+     * `MasterKeyManager.unlock` did, which is why it now encodes once and derives twice
+     * inside a single block.
      */
     inline fun <T> withPasswordBytes(password: CharArray, block: (ByteArray) -> T): T {
         val bytes = encodeUtf8(password)

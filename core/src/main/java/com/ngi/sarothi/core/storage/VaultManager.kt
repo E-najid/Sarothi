@@ -241,7 +241,14 @@ class VaultManager(
         }
         VaultPaths.REQUIRED_DIRECTORIES.forEach { fs.createDirectories(it) }
 
-        val security = masterKeys.createSecurity(password, kdf)
+        // Both halves of the vault's protection come out of one call, because creating
+        // them in two steps consumed the passphrase in the first one: createSecurity()
+        // wipes the array it is given, so the deriveKey() that used to follow it derived
+        // the vault's encryption key from a run of NUL characters. The vault still opened
+        // -- unlocking made the same mistake -- and the passphrase stopped being what
+        // protected the memories on the SD card.
+        val material = masterKeys.createKeyMaterial(password, kdf)
+        val security = material.security
         val now = Instant.now().toString()
         val created = VaultManifest(
             createdAt = now,
@@ -256,7 +263,7 @@ class VaultManager(
 
         // Seed the encrypted stores so a fresh vault has a consistent shape and the
         // first unlock does not have to distinguish "empty" from "missing".
-        val key = masterKeys.deriveKey(security, password)
+        val key = material.key
         masterKey = key
         runCatching {
             writeEncrypted(VaultPaths.NOTES, """{"notes":[]}""")
