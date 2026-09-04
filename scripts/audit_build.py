@@ -552,6 +552,34 @@ for path, text in stripped.items():
             f"declared parameters are {sorted(allowed)}"
         )
 
+# 7. An `if` expression used as a `+` operand without parentheses.
+#    `a + if (c) b else "" + d` parses as `a + if (c) b else ("" + d)`, because the
+#    else-branch extends as far as it can. The result compiles cleanly and reads
+#    correctly, but when the condition is true the trailing text silently vanishes.
+#    Found three times in plugin summaries: an alarm set for particular weekdays lost
+#    its label and its "the Clock app is open" sentence, a weather lookup lost "Sarothi
+#    will not guess coordinates", and a Home Assistant listing lost its entity list.
+IF_PLUS_OPERAND = re.compile(
+    r"^\s*(?:.*\+\s*)?if\s*\(.*\)\s*.+?\belse\b\s*(?:\"[^\"]*\"|\w[\w.]*)\s*\+\s*$"
+)
+COMMENT_LINE = re.compile(r"^\s*(?://|/\*|\*)")
+# This one runs on the raw source, not on `stripped`: the pattern is defined by its
+# string literals, and blanking them (which is what makes every other check immune to
+# prose) removes exactly what it has to match. Comment lines are skipped instead, which
+# is the narrower exemption and cannot hide a real expression.
+for path in kt_files:
+    for line_no, line in enumerate(
+        path.read_text(encoding="utf-8", errors="replace").split("\n"), 1
+    ):
+        if COMMENT_LINE.match(line):
+            continue
+        if IF_PLUS_OPERAND.match(line):
+            errors.append(
+                f"{rel(path)}:{line_no}: an `if` expression is a `+` operand without "
+                f"parentheses, so the `else` branch swallows everything after it -- "
+                f"wrap the whole `if` in parens"
+            )
+
 # ------------------------------------------------------------- report
 
 print(f"scanned {len(kt_files)} Kotlin files across {MODULES}\n")

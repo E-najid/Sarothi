@@ -46,6 +46,25 @@ private fun parseTimeOfDay(text: String): LocalTime? {
 }
 
 /** Sets an alarm in the system Clock app. */
+/**
+ * The AOSP DeskClock provider's alarm-instance table.
+ *
+ * `android.provider.AlarmClock.Instances` is @hide, so its CONTENT_URI and column
+ * names cannot be referenced at compile time -- unlike `AlarmClock.ACTION_SET_ALARM`
+ * just above, which is public. These are the literal values AOSP DeskClock uses.
+ *
+ * The provider is not part of any supported API, is not exported on many devices,
+ * and is not exported at all on recent Android, so reading it is best-effort and
+ * usually returns nothing. Only [SetAlarmPlugin.existingAlarms] uses it, and only to
+ * avoid setting a duplicate alarm: failing empty makes Sarothi set the alarm rather
+ * than skip one it could not confirm. Nothing here reports the user's alarms.
+ */
+private val ALARM_INSTANCES_URI =
+    android.net.Uri.parse("content://com.android.deskclock/instances")
+private const val ALARM_COLUMN_HOUR = "hour"
+private const val ALARM_COLUMN_MINUTES = "minutes"
+private const val ALARM_COLUMN_MESSAGE = "message"
+
 class SetAlarmPlugin : Plugin {
     override val name = "set_alarm"
     override val description =
@@ -124,7 +143,7 @@ class SetAlarmPlugin : Plugin {
         return when (val outcome = context.appContext.launchForResult(intent)) {
             LaunchOutcome.Started -> PluginResult.Success(
                 summaryForUser = "Set an alarm for ${TIME_FORMAT.format(time)}" +
-                    if (days.isNotEmpty()) " on ${days.size} weekday(s)" else "" +
+                    (if (days.isNotEmpty()) " on ${days.size} weekday(s)" else "") +
                     " (\"$label\"). The Clock app is open so you can check it.",
                 data = Json.obj {
                     addProperty("hour", time.hour)
@@ -141,12 +160,6 @@ class SetAlarmPlugin : Plugin {
         }
     }
 
-    /**
-     * Alarms currently in the system Clock app, as (minutes-from-midnight, label).
-     *
-     * Reads `AlarmClock.Instances.CONTENT_URI`, which is the supported way; it needs
-     * no permission but only returns alarms the provider chooses to expose.
-     */
     /**
      * Alarms the system Clock app will show us, as (minutes since midnight, label).
      *
@@ -423,13 +436,6 @@ class ConvertUnitsPlugin : Plugin {
 
     private companion object {
         private fun bd(value: String) = java.math.BigDecimal(value)
-
-        // AOSP DeskClock's AlarmClock.Instances is @hide; these are its literal values.
-        private val ALARM_INSTANCES_URI =
-            android.net.Uri.parse("content://com.android.deskclock/instances")
-        private const val ALARM_COLUMN_HOUR = "hour"
-        private const val ALARM_COLUMN_MINUTES = "minutes"
-        private const val ALARM_COLUMN_MESSAGE = "message"
 
         val UNITS: Map<String, Unit> = buildMap {
             // length → metres

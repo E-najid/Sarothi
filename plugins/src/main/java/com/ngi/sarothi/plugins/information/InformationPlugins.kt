@@ -388,7 +388,7 @@ class WeatherPlugin : Plugin {
             if (candidates == null || candidates.size() == 0) {
                 return PluginResult.Failure(
                     summaryForUser = "Open-Meteo found no place called \"$place\"" +
-                        if (hint != null) " in country $hint" else "" +
+                        (if (hint != null) " in country $hint" else "") +
                         ". Sarothi will not guess coordinates.",
                     errorClass = "PlaceNotFoundException",
                     retriable = true,

@@ -134,7 +134,7 @@ class HomeAssistantPlugin : Plugin {
                 PluginResult.Success(
                     summaryForUser = "${filtered.size} Home Assistant entit" +
                         (if (filtered.size == 1) "y" else "ies") +
-                        if (domain != null) " in domain '$domain'" else "" +
+                        (if (domain != null) " in domain '$domain'" else "") +
                         (if (filtered.isNotEmpty()) ": " + filtered.take(6).joinToString {
                             "${it.stringOrNull("entity_id")}=${it.stringOrNull("state")}"
                         } else ""),
