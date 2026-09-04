@@ -16,6 +16,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,8 +27,11 @@ import androidx.compose.ui.unit.dp
 import com.ngi.sarothi.app.di.AppGraph
 import com.ngi.sarothi.core.model.CatalogModel
 import com.ngi.sarothi.core.model.ModelCatalog
+import com.ngi.sarothi.core.storage.ModelAudit
 import com.ngi.sarothi.core.storage.ModelState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * What is installed, what is missing, and downloading the rest.
@@ -42,6 +46,17 @@ fun ModelsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     var note by remember { mutableStateOf<String?>(null) }
     val status = remember(tick) { graph.models.status() }
     val runtimeReason = remember(tick) { graph.llama.unavailabilityReason() }
+
+    // Integrity is proven by digesting the files, so it is read off the main thread and
+    // only when the vault is open; auditModels() requires both a filesystem and a
+    // manifest. A locked vault therefore shows every model as "not downloaded" being
+    // unknown rather than inventing a state.
+    var audit by remember { mutableStateOf<ModelAudit?>(null) }
+    LaunchedEffect(tick, graph.vault.isUnlocked) {
+        audit = withContext(Dispatchers.IO) {
+            if (graph.vault.isUnlocked) runCatching { graph.vault.auditModels() }.getOrNull() else null
+        }
+    }
 
     Column(
         modifier = modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -72,7 +87,7 @@ fun ModelsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             ModelRow(
                 graph = graph,
                 model = model,
-                state = graph.vault.stateOf(model),
+                state = audit?.stateOf(model) ?: ModelState.Missing,
                 onFinished = { result ->
                     note = result
                     tick++
@@ -112,6 +127,12 @@ private fun ModelRow(
             Text(
                 when (state) {
                     is ModelState.Missing -> "Not downloaded."
+                    is ModelState.SizeMismatch -> "Wrong size on disk: ${state.actualBytes} of " +
+                        "${state.expectedBytes} bytes -- the download did not finish."
+                    is ModelState.Corrupt -> "Digest does not match: this file is not what was " +
+                        "published, so it will not be loaded."
+                    is ModelState.PresentUnverified -> "Present, ${state.sizeBytes.asMegabytes()}, " +
+                        "but its integrity could not be proven (${state.reason})."
                     else -> state.javaClass.simpleName
                 },
                 style = MaterialTheme.typography.bodySmall,

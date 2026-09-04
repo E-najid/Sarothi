@@ -117,6 +117,7 @@ class AppGraph(context: Context) {
                 PluginResult.Failure(
                     summaryForUser = "'$pluginName' is no longer registered, so this action " +
                         "cannot be taken back.",
+                    errorClass = "PluginNotRegistered",
                 )
             } else {
                 plugin.undo(undoToken)
