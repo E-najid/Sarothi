@@ -66,11 +66,21 @@ enum class MemoryTier {
  * Nothing here is guessed at build time: [memory] is read from
  * `ActivityManager.getMemoryInfo()` on the actual device, so the same APK behaves
  * differently on a 3 GB phone and an 8 GB one. Users can override the derived
- * values in Settings; the overrides are persisted and [effective] merges them.
+ * values in Settings; the overrides are persisted and [tier] prefers them.
  */
-class RamPolicy(private val context: Context) {
+class RamPolicy internal constructor(
+    /**
+     * Reads the device's memory. A provider rather than a snapshot, because [canLoad]
+     * has to ask again at the moment a model is about to be loaded: the number that
+     * matters is the one measured then, not the one measured at construction.
+     */
+    private val memorySource: () -> DeviceMemory,
+) {
 
-    val memory: DeviceMemory by lazy { readMemory() }
+    /** Reads `ActivityManager.getMemoryInfo()` on the device this actually runs on. */
+    constructor(context: Context) : this({ readMemory(context) })
+
+    val memory: DeviceMemory by lazy { memorySource() }
 
     val derivedTier: MemoryTier get() = MemoryTier.forTotalRam(memory.totalBytes)
 
@@ -78,18 +88,6 @@ class RamPolicy(private val context: Context) {
     var tierOverride: MemoryTier? = null
 
     val tier: MemoryTier get() = tierOverride ?: derivedTier
-
-    private fun readMemory(): DeviceMemory {
-        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val info = ActivityManager.MemoryInfo()
-        manager.getMemoryInfo(info)
-        return DeviceMemory(
-            totalBytes = info.totalMem,
-            availableBytes = info.availMem,
-            lowMemoryThresholdBytes = info.threshold,
-            isLowMemory = info.lowMemory,
-        )
-    }
 
     /** Token budget for a context. KV cache grows linearly with this, so it is capped hard. */
     fun contextTokens(role: ModelRole): Int = when (tier) {
@@ -163,7 +161,7 @@ class RamPolicy(private val context: Context) {
      * which model to unload instead of triggering a system-wide kill.
      */
     fun canLoad(modelRamBytes: Long): Boolean {
-        val current = readMemory()
+        val current = memorySource()
         if (current.isLowMemory) return false
         val headroom = current.availableBytes - current.lowMemoryThresholdBytes
         return headroom > modelRamBytes + SAFETY_MARGIN_BYTES
@@ -182,6 +180,18 @@ class RamPolicy(private val context: Context) {
 
     companion object {
         private const val SAFETY_MARGIN_BYTES = 96L * DeviceMemory.MIB
+
+        private fun readMemory(context: Context): DeviceMemory {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val info = ActivityManager.MemoryInfo()
+            manager.getMemoryInfo(info)
+            return DeviceMemory(
+                totalBytes = info.totalMem,
+                availableBytes = info.availMem,
+                lowMemoryThresholdBytes = info.threshold,
+                isLowMemory = info.lowMemory,
+            )
+        }
 
         fun fromJson(json: JsonObject): MemoryTier? =
             json.intOr("tier_ordinal", -1).takeIf { it >= 0 }

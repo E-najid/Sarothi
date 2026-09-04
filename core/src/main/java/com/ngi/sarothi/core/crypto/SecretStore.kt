@@ -20,7 +20,7 @@ import com.ngi.sarothi.core.util.Hex
  * from scratch and the failure is reported, because silently falling back to
  * plaintext storage would break the security model without anyone noticing.
  */
-class SecretStore(private val context: Context) {
+class SecretStore(private val context: Context) : LockoutStore {
 
     private val prefs: SharedPreferences = openOrCreate()
     private var rebuiltAfterFailure = false
@@ -84,11 +84,17 @@ class SecretStore(private val context: Context) {
 
     // ------------------------------------------------------------------ numerics
 
-    fun putLong(key: String, value: Long) = prefs.edit().putLong(key, value).apply()
-    fun getLong(key: String, fallback: Long = 0L): Long = prefs.getLong(key, fallback)
+    override fun putLong(key: String, value: Long) {
+        prefs.edit().putLong(key, value).apply()
+    }
 
-    fun putInt(key: String, value: Int) = prefs.edit().putInt(key, value).apply()
-    fun getInt(key: String, fallback: Int = 0): Int = prefs.getInt(key, fallback)
+    override fun getLong(key: String, fallback: Long): Long = prefs.getLong(key, fallback)
+
+    override fun putInt(key: String, value: Int) {
+        prefs.edit().putInt(key, value).apply()
+    }
+
+    override fun getInt(key: String, fallback: Int): Int = prefs.getInt(key, fallback)
 
     fun putBoolean(key: String, value: Boolean) = prefs.edit().putBoolean(key, value).apply()
     fun getBoolean(key: String, fallback: Boolean = false): Boolean = prefs.getBoolean(key, fallback)

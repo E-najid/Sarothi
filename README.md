@@ -19,26 +19,26 @@ Each step runs through a permission + safety gate, and is written to task_histor
 
 ## Current status
 
-This repository contains the **complete `:core` capability layer and the complete
-`:plugins` catalogue** — 27,500 lines of Kotlin across 113 files, plus the JNI
-bridge to llama.cpp / whisper.cpp / espeak-ng.
+The whole app is written and building: **31,200 lines of Kotlin across 132 source
+files** in three modules, plus the JNI bridge to llama.cpp / whisper.cpp / espeak-ng,
+plus **176 unit tests** in 10 more files. CI assembles two APKs on every push.
 
 | Module | State |
 |---|---|
-| `:core` — crypto, vault, agent, plugins, screen, voice, models, safety, scheduling | ✅ Implemented |
-| `:plugins` — 78 plugins across 9 categories | ✅ Implemented |
+| `:core` — crypto, vault, agent, plugins, screen, voice, models, safety, scheduling (94 files, 17,700 lines) | ✅ Implemented |
+| `:plugins` — 78 plugins across 9 categories (20 files, 10,300 lines) | ✅ Implemented |
+| `:app` — Compose UI (10 screens), DI graph, manifest (18 files, 3,200 lines) | ✅ Implemented |
 | `core/src/main/cpp` — JNI bridge (llama.cpp, whisper.cpp, espeak-ng) | ✅ Implemented |
 | `.github/workflows/build.yml` — CI | ✅ Implemented |
-| `:app` — Compose UI, DI graph, manifest | ❌ **Not yet written** |
+| Unit tests — `:core` and `:plugins`, JVM-only | ✅ 176 passing |
 | Gradle wrapper (`gradlew`, `gradle-wrapper.jar`) | ❌ Not committed (binary) |
-| `scripts/build_espeak_ng.sh`, `docs/` | ❌ Not yet written |
+| `scripts/build_espeak_ng.sh`, `docs/`, `LICENSE` | ❌ Not yet written |
 
-**The project does not build an APK yet.** `settings.gradle.kts` declares `:app`, but
-that module has only its launcher icons — no `build.gradle.kts`, no manifest, no
-Kotlin. The two library modules do compile on their own, and CI builds them; see
-[Continuous integration](#continuous-integration). Nothing in this repo pretends
-otherwise: unimplemented capabilities throw or report themselves unavailable at
-runtime rather than returning fake results.
+CI produces `app-arm64-v8a-debug.apk` (65.2 MB) and `app-armeabi-v7a-debug.apk`
+(51.4 MB); see [Continuous integration](#continuous-integration). Nothing in this
+repo pretends to more than it does: unimplemented capabilities throw or report
+themselves unavailable at runtime rather than returning fake results, and
+[What is missing](#what-is-missing) lists what is still outstanding.
 
 ## Continuous integration
 
@@ -47,7 +47,7 @@ runtime rather than returning fake results.
 | Job | What it does | Blocking |
 |---|---|---|
 | `verify` | Argon2id vs RFC 9106, delimiter balance, build audit, model-catalogue self-consistency. No JDK or Android SDK. | ✅ |
-| `build` | `:core:assembleDebug :plugins:assembleDebug` on Gradle 8.11.1 / JDK 17. **Automatically adds `:app:assembleDebug` the moment `app/build.gradle.kts` exists** — no workflow edit needed. | ✅ |
+| `build` | `:core:assembleDebug :plugins:assembleDebug :app:assembleDebug` on Gradle 8.11.1 / JDK 17, then `:core:testDebugUnitTest :plugins:testDebugUnitTest`, then the two per-ABI APKs. The test step **counts the tests that ran and fails on zero** — see [Unit tests](#unit-tests). | ✅ |
 | `lint` | Android lint on the library modules. | ⚠️ non-blocking, but a *separate visible check*, not a swallowed `continue-on-error` step |
 | `gradle-wrapper` | Regenerates the uncommitted wrapper and publishes it as an artifact. | — |
 
@@ -57,9 +57,14 @@ Two things shape the workflow and are worth knowing before you run it:
   committed, so `gradle/actions/setup-gradle` supplies Gradle directly, pinned to
   the same 8.11.1 as `gradle-wrapper.properties`. Dispatch the `gradle-wrapper`
   job once, commit the four artifact files, and CI can switch to `./gradlew`.
-- **No APK until `:app` lands.** Gradle tolerates an included project with no build
-  script, so `:core` and `:plugins` assemble fine and the APK step reports itself
-  skipped in the job summary rather than silently passing.
+- **A failure is reported on the pull request, not only in the log.** Job logs and
+  artifacts live on blob storage that tooling frequently cannot reach, so
+  `scripts/report_build_failure.py` mines `build.log` for compiler errors, failing
+  tests and Gradle's own explanation, replaces the single marker comment on the PR,
+  and emits check-run annotations — the one diagnostic channel served by the ordinary
+  REST API. When a build goes green the same comment is replaced with a passing note
+  carrying the test counts, so a PR never shows a failure report for an older commit
+  as though it described the current one.
 
 The native runtime is opt-in: dispatch with `native=true` (or push a tag) to clone
 the pinned llama.cpp/whisper.cpp and compile the JNI bridge for both ABIs. The
@@ -78,9 +83,9 @@ check that cannot fail is not a check.
 | Script | What it proves | Result |
 |---|---|---|
 | `verify_argon2_rfc9106.py` | Argon2id in `core/…/crypto/Argon2.kt` against the official RFC 9106 vectors | **14/14 pass**, final tag `0d640df5…e659` |
-| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists | **0 errors**, 3 known-gap warnings |
+| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists | **0 errors**, 1 known-gap warning |
 | `verify_model_catalog.py --offline` | All 9 catalogue pins are well-formed, uniquely keyed, and locatable upstream | **OK** |
-| `check_kotlin_braces.py` | Delimiter balance across all 117 Kotlin sources | **0 unbalanced** |
+| `check_kotlin_braces.py` | Delimiter balance across all 147 Kotlin sources (142 `.kt`, 5 `.kts`) | **0 unbalanced** |
 
 Argon2id is the one piece of cryptography provable without a device, which matters
 because the whole vault rests on it: two independent salts derive the AES key and
@@ -90,11 +95,63 @@ the verifier hash, so a password can be confirmed without exposing the key.
 references a per-module contract that is easy to break silently, and because it
 found four real defects in this codebase (see below).
 
-**Not verified: compilation.** No JDK or Android SDK was available where this code
-was written and there was no network egress for Gradle, so `:core` and `:plugins`
-have never been through `kotlinc`. The checks above are structural and semantic at
-the reference level — they are not a type checker. The first real build may still
-surface signature-level errors.
+The scripts above run without a JDK, so they also run for a reviewer who has only
+cloned the repository. Compilation, unit tests and lint need a runner, and CI has
+one; see the next section for what the tests do and do not cover.
+
+**Not verified: anything that needs a device.** There are no instrumentation tests and
+no emulator in CI, so the accessibility service, MediaProjection capture, the native
+model runtimes, model downloads and every Compose screen are compiled and reasoned
+about but never executed by a machine. What CI proves about them is that they type-check,
+that lint accepts them, and that the code paths which cannot work on a given device
+report themselves unavailable instead of returning a fake result.
+
+### Unit tests
+
+176 tests in 10 files, all JVM-only: no device, no emulator, no Robolectric, no network.
+They cover the logic whose wrong answer is invisible at the moment it happens — a
+schedule firing at the wrong time, a vault key that is not the one the RFC specifies, a
+plan silently losing a step.
+
+| Suite | Tests | What it pins down |
+|---|---|---|
+| `crypto/CryptoTest` | 15 | Argon2id against the RFC 9106 §5.3 vector, so key derivation is checked against a published answer rather than against itself; AES-256-GCM round-trip, nonce freshness, wrong key, tampered ciphertext, AAD binding; the sealed-file format's header and path binding, truncation, unknown version, and that no plaintext survives into the bytes |
+| `runtime/RamPolicyTest` | 24 | What a device with a given amount of RAM may ask for: the tier boundaries, so a 3 GB phone lands where the documentation says whether it reports 3072 MiB or the ~2800 MiB a real one reports after kernel reservations; the per-tier step and model-call budgets and the invariants they have to satisfy (a plan must fit its task, a generation must fit the task, no ceiling may be zero); context and batch sizes; the vision model never staying resident on a constrained device; the load refusal that stands between a new model and a system-wide low-memory kill; and the persisted tier ordinals, which a reordered enum would silently change the meaning of |
+| `crypto/LockoutTrackerTest` | 12 | The brute-force backoff: three free attempts, then a wait that doubles to a 24-hour cap, a shift that cannot overflow into a negative wait, an elapsed window that keeps the count so the next failure escalates instead of restarting, and state that survives a new tracker over the same store -- which is what a force-stop must not be able to reset |
+| `plugin/JsonSchemaTest` | 18 | The gate between what a 350 M model emitted and what a plugin is handed. Both halves of its rule: lossless repair is allowed *and reported*, invention is refused. A missing required parameter stays an error, so the agent asks rather than guesses |
+| `schedule/ScheduleLogicTest` | 19 | When a task next fires, for every recurrence, including day 31 in a month that has 30 days; and which notifications trip a rule — `ALL` against `ANY`, package scoping, case sensitivity, cooldown, a rule disabled, a notification with no title or body |
+| `schedule/SchedulePersistenceTest` | 19 | Tasks and rules written out and read back, as they are after a reboot or a restore onto a new phone. A field written but never read is invisible in the editor and wrong at run time; damaged input has to degrade to something safe rather than to nothing |
+| `safety/UndoRegistryTest` | 10 | What Sarothi claims it can take back, and whether it can. The Undo button is offered only for what this registry holds, so a mistake here is a lie in one direction or the other |
+| `agent/PlanParserTest` | 29 | Orchestrator output becoming steps: kinds and their synonyms, asking, refusing, fenced and prose-wrapped JSON, trailing commas, every spelling of tool name / arguments / intent / failure policy — and the line it must not cross, which is turning a bare-string step into a tool nobody chose |
+| `util/JsonReplyTest` | 17 | Finding the JSON inside a reply that also contains prose, for both models |
+| `plugins/BuiltinPluginsTest` | 13 | The contract over all 78 plugins at once: unique snake_case names, no undocumented parameter, no permission string that is not a permission, every category populated, schemas that survive a JSON round trip |
+
+The build fails if that count reaches zero. This is not a hypothetical safeguard: before
+these tests existed, `:core:testDebugUnitTest` was already wired into CI and passed,
+because a Gradle test task with no matching sources succeeds — and the pull-request
+comment reported that the commit "passes its unit tests". `scripts/count_unit_tests.py`
+mines the JUnit XML so the claim can only be made when something actually ran.
+
+**What writing them found.** Five real defects, none of them visible by reading:
+
+1. `ScheduledTask.computeNextRun()` treated `HOURLY` as "matches unconditionally" on the
+   first pass through a loop whose candidate had already been seeded from `timeOfDay`, so
+   an hourly task fired once a day at 09:00 and the `plusHours(1)` step below it was
+   unreachable dead code — while the schedule screen told the user "runs at the top of
+   every hour".
+2. `JsonSchema.fromJson()` dropped constraints that `toJson()` wrote: a text property's
+   `maxLength` and a list property's default. A schema that travelled through JSON stopped
+   enforcing a limit it still advertised.
+3. Both hand-rolled JSON extractors stopped scanning at a brace that never closed — prose
+   like "I will use the {tool you named" — and reported no JSON at all, discarding the
+   usable plan in the same reply. There is now one implementation, `core/util/JsonReply.kt`,
+   shared by the plan parser and the vision describer, whose private copy was weaker still:
+   it tried only the first `{`, with no fence stripping and no trailing-comma retry.
+4. A reply that was a bare array of step objects lost the whole task. The scanner returned
+   the array's first element, which has no kind and no steps, so it parsed as an `ANSWER`
+   carrying no text, and every later step was dropped.
+5. `extractObject` stopped at the first parseable span whatever it was, so a reply opening
+   with a citation — "Sources: [1] and [2]." — reported no object at all.
 
 ### Defects found and fixed by the audit
 
@@ -112,9 +169,9 @@ These were all live in the tree and would have failed a build:
    it eagerly, so a Kotlin-only build would fail on any machine without that exact
    NDK installed — including CI runners — even with no native code to compile. Now
    set only when `third_party/` is present.
-4. **`settings.gradle.kts` includes `:app`, which has no build script.** Not a
-   configuration failure (Gradle tolerates it), but it means no APK. Left as-is and
-   reported as a warning, since fixing it means writing the module.
+4. **`settings.gradle.kts` included `:app`, which had no build script.** Not a
+   configuration failure (Gradle tolerates it), but it meant no APK. The module has
+   since been written and the APKs build.
 
 Also missing and now written: `scripts/setup_native.sh` (referenced by 9 committed
 files) and `scripts/verify_model_catalog.py` (referenced by `ModelCatalog.kt`).
@@ -124,7 +181,7 @@ files) and `scripts/verify_model_catalog.py` (referenced by `ModelCatalog.kt`).
 ## Architecture
 
 ```
-:app        Compose UI, DI graph, MainActivity           (not yet written)
+:app        Compose UI (10 screens), DI graph, MainActivity
   │
   ├─ :plugins   78 plugins. Depend on :core's contract only —
   │             capabilities arrive via PluginContext, never by
@@ -282,7 +339,8 @@ Where a capability cannot really be delivered, it says so instead of faking it:
 
 ## What is missing
 
-The following is still outstanding:
+The `:app` module, the CI pipeline and the unit-test suite are written and green. What
+is still outstanding:
 
 1. ~~**`:app` module**~~ — **written and building.** `build.gradle.kts` (application
    plugin, Compose, `applicationId com.ngi.sarothi`, `en`/`bn` resource configs),
@@ -291,7 +349,7 @@ The following is still outstanding:
    (light + night), `SarothiApplication`, `di/AppGraph.kt` wiring every `:core`
    constructor and publishing all four registry seams, `notify/AndroidNotifier.kt`,
    `di/LlamaTextModelClient.kt` (the one `TextModelClient` implementation),
-   `di/PersonaRepository.kt`, and seven Compose screens: task with the live checklist,
+   `di/PersonaRepository.kt`, and ten Compose screens: task with the live checklist,
    question and confirmation dialogs; vault pick / create / restore / lock / detach;
    models with integrity state and resumable downloads; persona editor; task history;
    audit log; access (special-access settings screens, per-plugin verdicts, and the
@@ -315,12 +373,10 @@ The following is still outstanding:
 5. **`LICENSE`** — the project is intended to be open source but no licence file
    has been chosen or added yet.
 
-The DI graph is the substantial piece: every `:core` class is constructor-injected
-with no DI framework, so `:app` has to build the object graph by hand and publish
-the pieces Android creates on its own (`AccessibilityService`, foreground
-services, `BroadcastReceiver`s) through the registries in `:core` —
-`AccessibilityHostRegistry`, `ScreenshotSourceRegistry`, `AgentRunnerRegistry`,
-`ScheduleRegistry`, `GeofenceRegistry`, `ModelDownloadRegistry`.
+6. **Instrumentation tests.** The 176 unit tests are JVM-only, so nothing that needs a
+   device is executed by a machine: the accessibility service, MediaProjection capture,
+   the native model runtimes, resumable downloads and all ten Compose screens compile and
+   pass lint but are untested at runtime. Testing them needs an emulator in CI.
 
 ---
 

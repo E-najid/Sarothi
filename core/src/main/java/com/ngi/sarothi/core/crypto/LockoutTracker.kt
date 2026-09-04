@@ -16,7 +16,23 @@ import kotlin.math.min
  * does reset it — but it also drops the vault folder URI, so the attacker still
  * needs the passphrase plus physical access to the SD card.
  */
-class LockoutTracker(private val secrets: SecretStore) {
+/**
+ * The four counters [LockoutTracker] persists, as the seam it actually needs.
+ *
+ * Declared by the consumer rather than by [SecretStore], so the backoff can be tested on
+ * a JVM against a map instead of against Android Keystore-backed preferences -- which
+ * cannot be created on a machine that has no Keystore, and therefore cannot be tested at
+ * all. The brute-force backoff is the one protection that has to keep working across a
+ * restart, so it is worth an interface to make it checkable.
+ */
+interface LockoutStore {
+    fun getInt(key: String, fallback: Int = 0): Int
+    fun putInt(key: String, value: Int)
+    fun getLong(key: String, fallback: Long = 0L): Long
+    fun putLong(key: String, value: Long)
+}
+
+class LockoutTracker(private val secrets: LockoutStore) {
 
     data class State(
         val failedAttempts: Int,
