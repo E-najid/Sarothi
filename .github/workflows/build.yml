@@ -54,6 +54,11 @@ concurrency:
 
 permissions:
   contents: read
+  # Needed so a failed build can post the compiler output as a PR comment. Raw
+  # job logs live on blob storage that is awkward to reach from tooling, and a
+  # wall of Gradle output nobody reads is worse than useless -- the errors should
+  # arrive where the reviewer already is.
+  pull-requests: write
 
 env:
   # Pinned here as well as in gradle-wrapper.properties so a wrapper-less run and
@@ -186,13 +191,68 @@ jobs:
           echo "Gradle targets: $targets"
 
       - name: Assemble
-        run: gradle --no-daemon --stacktrace ${{ steps.modules.outputs.targets }}
+        # tee rather than letting Gradle own stdout: when this fails the log is
+        # still on the runner for the reporting step below to mine.
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --stacktrace --console=plain ${{ steps.modules.outputs.targets }} 2>&1 | tee build.log
+          exit "${PIPESTATUS[0]}"
 
       - name: Unit tests
         # No test sources exist yet; the task is wired so that the first test added
         # is executed by CI without a workflow change.
         continue-on-error: false
-        run: gradle --no-daemon --stacktrace :core:testDebugUnitTest :plugins:testDebugUnitTest
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --stacktrace --console=plain \
+            :core:testDebugUnitTest :plugins:testDebugUnitTest 2>&1 | tee -a build.log
+          exit "${PIPESTATUS[0]}"
+
+      # Runs only when something above failed. Raw job logs live on blob storage
+      # that tooling often cannot reach, and scrolling four thousand lines of
+      # Gradle output to find twenty lines of compiler errors is how a first
+      # build never gets fixed. This mines the log and puts the signal where the
+      # reviewer already is.
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ ! -f build.log ]; then
+            echo "No build.log captured; the failure happened before Gradle ran." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          python3 scripts/report_build_failure.py build.log -o failure-report.md
+          cat failure-report.md >> "$GITHUB_STEP_SUMMARY"
+
+          # One comment per PR, updated in place, so a branch that fails ten times
+          # does not leave ten walls of text behind.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            marker="<!-- sarothi-build-failure -->"
+            pr="${{ github.event.pull_request.number }}"
+            body="$marker"$'\n'"$(cat failure-report.md)"
+            existing=$(gh pr view "$pr" --json comments \
+              -q '.comments[] | select(.body | contains("'"$marker"'")) | .url' | tail -1)
+            if [ -n "$existing" ]; then
+              id="${existing##*/}"
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -f body="$body" > /dev/null
+            else
+              gh pr comment "$pr" --body "$body" > /dev/null
+            fi
+          fi
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build.log
+            failure-report.md
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Unsigned release build
         if: inputs.release == true && steps.modules.outputs.app_present == 'true'
