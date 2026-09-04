@@ -3,6 +3,7 @@ package com.ngi.sarothi.app.di
 import android.content.Context
 import com.ngi.sarothi.app.notify.AndroidNotifier
 import com.ngi.sarothi.core.agent.SarothiAgent
+import com.ngi.sarothi.core.crypto.BiometricKeyVault
 import com.ngi.sarothi.core.crypto.MasterKeyManager
 import com.ngi.sarothi.core.crypto.SecretStore
 import com.ngi.sarothi.core.data.DataStores
@@ -80,6 +81,13 @@ class AppGraph(context: Context) {
     val secrets = SecretStore(appContext)
     val masterKeys = MasterKeyManager(secrets)
     val vault = VaultManager(appContext, secrets, masterKeys)
+
+    /**
+     * Biometric unlock, which is a convenience layer and never a second way in: the key
+     * it unwraps is the same one the passphrase derives, and it is wrapped by a Keystore
+     * key that cannot leave the device.
+     */
+    val biometrics = BiometricKeyVault(appContext, secrets)
 
     // --- device capability ----------------------------------------------------
     val ramPolicy = RamPolicy(appContext)
@@ -258,6 +266,10 @@ class AppGraph(context: Context) {
         // features on; without it each service starts, finds nothing, and stops with an
         // honest "cannot proceed" notification.
         ModelDownloadRegistry.attach(downloader, notifier)
+        // Published with the graph so the download service -- which Android may start
+        // into a process of its own -- enforces the same choice the Settings screen
+        // shows, rather than defaulting to something the user changed.
+        ModelDownloadRegistry.setAllowMobileData(allowMobileData)
         GeofenceRegistry.attach(geofences, notifier)
 
         rules = NotificationRuleEngine(
@@ -267,10 +279,27 @@ class AppGraph(context: Context) {
         )
     }
 
+    /**
+     * Whether a model download may use mobile data. Off by default: these files are
+     * 60-220 MB and spending someone's data allowance without asking is not a default
+     * worth having. Device-local rather than in the vault, because it describes this
+     * phone's data plan and should not follow the SD card to another one.
+     */
+    var allowMobileData: Boolean = secrets.getBoolean(KEY_ALLOW_MOBILE_DATA, false)
+        set(value) {
+            field = value
+            secrets.putBoolean(KEY_ALLOW_MOBILE_DATA, value)
+            ModelDownloadRegistry.setAllowMobileData(value)
+        }
+
     fun shutdown() {
         GeofenceRegistry.detach(geofences)
         ModelDownloadRegistry.detach(downloader)
         models.releaseAll()
         scope.cancel()
+    }
+
+    private companion object {
+        const val KEY_ALLOW_MOBILE_DATA = "downloads.allowMobileData"
     }
 }

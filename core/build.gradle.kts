@@ -95,7 +95,10 @@ dependencies {
 
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.security.crypto)
-    implementation(libs.androidx.biometric)
+    // `api` rather than implementation: BiometricKeyVault's public signatures hand back a
+    // BiometricPrompt.CryptoObject, so any module that calls it -- :app drives the prompt --
+    // needs androidx.biometric on its compile classpath, not just at runtime.
+    api(libs.androidx.biometric)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.mlkit.text.recognition)

@@ -1,7 +1,6 @@
 package com.ngi.sarothi.app.ui
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import com.ngi.sarothi.app.SarothiApplication
 import com.ngi.sarothi.app.di.AppGraph
 
@@ -46,7 +46,11 @@ import com.ngi.sarothi.app.di.AppGraph
  * `launchMode="singleTask"` in the manifest is what makes a notification tap land on the
  * running task instead of starting a second copy of the agent over the top of the first.
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+    // FragmentActivity rather than ComponentActivity: androidx.biometric's BiometricPrompt
+    // only attaches to a FragmentActivity, and Settings drives the biometric unlock from
+    // here. FragmentActivity extends ComponentActivity, so enableEdgeToEdge and
+    // setContent behave exactly as before.
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,6 +87,15 @@ private enum class Sub(val title: String, val blurb: String) {
     HISTORY("Task history", "Every task that has run, from task_history/ in your vault."),
     LOGS("Audit log", "Every action Sarothi took and what happened. Read-only."),
     PERMISSIONS("Access", "What Sarothi can do right now, and the settings screens that change it."),
+    SCHEDULES(
+        "Schedules and rules",
+        "Every trigger that exists: what it asks Sarothi to do, when it last fired, and " +
+            "how to pause or delete it.",
+    ),
+    SETTINGS(
+        "Settings",
+        "Mobile-data downloads, and biometric unlock as a convenience over your passphrase.",
+    ),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -131,6 +144,8 @@ private fun SarothiScaffold(graph: AppGraph) {
                 Sub.HISTORY -> HistoryScreen(graph, contentModifier)
                 Sub.LOGS -> LogsScreen(graph, contentModifier)
                 Sub.PERMISSIONS -> PermissionsScreen(graph, contentModifier)
+                Sub.SCHEDULES -> ScheduleScreen(graph, contentModifier)
+                Sub.SETTINGS -> SettingsScreen(graph, contentModifier)
             }
         } else {
             when (tab) {

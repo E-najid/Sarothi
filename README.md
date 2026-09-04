@@ -294,12 +294,13 @@ The following is still outstanding:
    `di/PersonaRepository.kt`, and seven Compose screens: task with the live checklist,
    question and confirmation dialogs; vault pick / create / restore / lock / detach;
    models with integrity state and resumable downloads; persona editor; task history;
-   audit log; and access (special-access settings screens, per-plugin verdicts, and the
-   accessibility-service prompt that decides whether Sarothi can see the screen).
-   Still to write: the schedule and notification-rule editors (the agent's `schedule_task`
-   plugin creates them today; there is no screen to edit one by hand), per-plugin config
-   screens for the connectors, a biometric-unlock convenience path, and the
-   "download over mobile data" toggle that `ModelDownloadRegistry` already has a slot for.
+   audit log; access (special-access settings screens, per-plugin verdicts, and the
+   accessibility-service prompt that decides whether Sarothi can see the screen);
+   schedules and notification rules, editable by hand as well as created by the agent;
+   and settings for mobile-data downloads and biometric unlock.
+   Still to write: per-plugin config screens for the connectors (their keys live in
+   `plugins_config/<name>.json` and the agent can set them today, but there is no screen
+   to type a Home Assistant URL into by hand).
 
 
 2. **`scripts/build_espeak_ng.sh`** — cross-compiles espeak-ng `1.52.0` and
