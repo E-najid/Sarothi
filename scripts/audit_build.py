@@ -11,6 +11,15 @@ that are cheap to find textually:
   3. Manifest `android:name` entries pointing at classes that do not exist.
   4. `libs.<alias>` used in a build script but absent from the version catalog.
   5. Gradle `include(":x")` with no build script in that directory.
+  6. A script referenced by a committed file that does not exist.
+  7. The Kotlin traps CI has already paid for, so they are checked instead of
+     rediscovered: an internal declaration used from another module, a `when` over
+     an enum with no `else`, a trailing comma after one, and the rest.
+  8. `:app` has a real entry point -- an Application subclass and a launcher
+     Activity that both exist as classes.
+  9. Every `object *Registry` that declares `attach()` is actually attached
+     somewhere, or everything behind it is dead at runtime while still compiling.
+ 10. Every XML resource and manifest parses.
 
 Deliberately conservative: anything ambiguous is reported as a warning, not an
 error, so the output stays trustworthy rather than crying wolf.
@@ -23,6 +32,7 @@ import os
 import re
 import sys
 import tomllib
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
@@ -732,6 +742,35 @@ for kt in kt_files:
                 f"{rel(kt)}: {registry}.attach() is never called, so {registry}.current is "
                 f"always null and everything behind it is dead at runtime"
             )
+
+# ------------------------------------------------- 11. every XML file parses
+#
+# Resource and manifest XML is not type-checked, and AGP parses it before it compiles a
+# line of Kotlin -- so a malformed file fails `parseDebugLocalResources` with a SAX error
+# naming a copy under build/intermediates/ rather than the source anyone can edit. Two
+# rules bite in practice and are invisible everywhere else: a comment placed inside a
+# start tag, between two attributes, and `--` inside a comment, which XML forbids. Both
+# reached this repository once, in the same edit, and cost a whole build cycle to find.
+for module in MODULES:
+    src = ROOT / module / "src"
+    if not src.is_dir():
+        continue
+    for path in sorted(src.rglob("*.xml")):
+        if "build" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for comment in re.finditer(r"<!--(.*?)-->", text, re.S):
+            if "--" in comment.group(1):
+                line = text[: comment.start()].count("\n") + 1
+                errors.append(
+                    f"{rel(path)}:{line}: XML comment contains '--', which XML forbids "
+                    f"inside a comment and a parser rejects without saying why"
+                )
+        try:
+            ET.fromstring(text)
+        except ET.ParseError as failure:
+            line, column = getattr(failure, "position", (0, 0))
+            errors.append(f"{rel(path)}:{line}:{column}: XML does not parse -- {failure}")
 
 # ------------------------------------------------------------- report
 

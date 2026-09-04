@@ -86,7 +86,7 @@ check that cannot fail is not a check.
 | Script | What it proves | Result |
 |---|---|---|
 | `verify_argon2_rfc9106.py` | Argon2id in `core/…/crypto/Argon2.kt` against the official RFC 9106 vectors | **14/14 pass**, final tag `0d640df5…e659` |
-| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists | **0 errors**, 1 known-gap warning |
+| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists; every XML resource and manifest parses | **0 errors**, 1 known-gap warning |
 | `verify_model_catalog.py --offline` | All 9 catalogue pins are well-formed, uniquely keyed, and locatable upstream | **OK** |
 | `check_kotlin_braces.py` | Delimiter balance across all 154 Kotlin sources (149 `.kt`, 5 `.kts`) | **0 unbalanced** |
 
