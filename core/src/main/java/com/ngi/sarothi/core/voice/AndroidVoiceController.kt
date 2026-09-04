@@ -419,7 +419,17 @@ class AndroidVoiceController(
         // revoked mid-session, and AudioRecord's constructor throws SecurityException
         // without it. Returning null is this function's documented "could not open the
         // recorder" path, which the caller already turns into a ListenOutcome.Failed.
-        if (!hasRecordPermission()) {
+        //
+        // Spelled out rather than calling hasRecordPermission(), even though that helper
+        // does exactly this test: lint's MissingPermission analysis recognises an inline
+        // checkSelfPermission guard followed by an early return, but it will not follow
+        // the same test into a private method, so the AudioRecord construction below
+        // stayed flagged while the guard was behind the helper. The runCatching further
+        // down does not satisfy the check either -- it catches Throwable generally, and
+        // lint is looking for SecurityException to be named. Behaviour is unchanged.
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
             Log.w(TAG, "RECORD_AUDIO is not granted, so the recorder cannot be opened")
             return null
         }
