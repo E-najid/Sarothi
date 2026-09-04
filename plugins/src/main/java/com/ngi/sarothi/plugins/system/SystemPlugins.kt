@@ -150,12 +150,22 @@ class StorageStatusPlugin : Plugin {
         val volumes = storageManager?.storageVolumes ?: emptyList()
         val removable = volumes.filter { it.isRemovable }
 
-        val external = removable.firstNotNullOfOrNull { volume ->
-            val directory = runCatching { volume.directory }.getOrNull() ?: return@firstNotNullOfOrNull null
-            runCatching {
-                val stats = StatFs(directory.absolutePath)
-                Triple(volume.toString(), stats.totalBytes, stats.availableBytes)
-            }.getOrNull()
+        // StorageVolume.getDirectory() is API 30 and this module's minSdk is 26, so on
+        // Android 8 through 10 the call throws NoSuchMethodError. The runCatching below
+        // would swallow that and the plugin would keep working, but implementing a
+        // version check by catching a linkage error hides what is actually happening --
+        // and it left the note further down blaming permissions for an API level.
+        val external = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            removable.firstNotNullOfOrNull { volume ->
+                val directory = runCatching { volume.directory }.getOrNull()
+                    ?: return@firstNotNullOfOrNull null
+                runCatching {
+                    val stats = StatFs(directory.absolutePath)
+                    Triple(volume.toString(), stats.totalBytes, stats.availableBytes)
+                }.getOrNull()
+            }
+        } else {
+            null
         }
 
         if (internal == null && external == null) {
@@ -181,10 +191,18 @@ class StorageStatusPlugin : Plugin {
                 addProperty("removable_available", Formatting.bytes(external.third))
             } else {
                 addProperty("removable_present", removable.isNotEmpty())
-                addProperty("removable_note", if (removable.isEmpty()) {
-                    "No removable storage is mounted."
-                } else {
-                    "Removable storage is mounted but Sarothi has no permission to read its free space."
+                // Three genuinely different reasons, and the model reading this decides
+                // what to tell the user, so they are not collapsed into one message.
+                addProperty("removable_note", when {
+                    removable.isEmpty() ->
+                        "No removable storage is mounted."
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.R ->
+                        "Removable storage is mounted, but reading a volume's free space needs " +
+                            "Android 11 or newer and this phone runs Android " +
+                            "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}). The internal " +
+                            "storage figures are still accurate."
+                    else ->
+                        "Removable storage is mounted but Sarothi could not read its free space."
                 })
             }
             addProperty("removable_volume_count", removable.size)
