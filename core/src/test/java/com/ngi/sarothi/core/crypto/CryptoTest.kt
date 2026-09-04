@@ -98,7 +98,7 @@ class CryptoTest {
             kdf.deriveKey("pw".toByteArray(), ByteArray(7))
             fail("A 7-byte salt must be rejected, not quietly accepted")
         } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("salt"))
+            assertTrue("the refusal should name the salt, said: ${expected.message}", expected.message!!.contains("salt"))
         }
     }
 
@@ -172,7 +172,7 @@ class CryptoTest {
             AesGcm.encrypt(ByteArray(16), "x".toByteArray())
             fail("AES-256-GCM must not silently run with a 128-bit key")
         } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("32"))
+            assertTrue("the refusal should state the key size, said: ${expected.message}", expected.message!!.contains("32"))
         }
     }
 
@@ -190,7 +190,7 @@ class CryptoTest {
                 plaintext,
                 EncryptedFileFormat.open(key, "memories/memories.json", sealed),
             )
-            assertTrue(EncryptedFileFormat.isSealed(sealed))
+            assertTrue("what seal() produced must be recognised as sealed", EncryptedFileFormat.isSealed(sealed))
         }
     }
 
@@ -214,9 +214,9 @@ class CryptoTest {
             EncryptedFileFormat.open(key, "memories/notes.json", foreign)
             fail("Another app's file must be reported, not decrypted as though it were ours")
         } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("not a Sarothi encrypted file"))
+            assertTrue("the refusal should say the header is foreign, said: ${expected.message}", expected.message!!.contains("not a Sarothi encrypted file"))
         }
-        assertFalse(EncryptedFileFormat.isSealed(foreign))
+        assertFalse("a foreign header must not be mistaken for ours", EncryptedFileFormat.isSealed(foreign))
     }
 
     @Test
@@ -225,7 +225,7 @@ class CryptoTest {
             EncryptedFileFormat.open(AesGcm.generateKey(), "logs/x.json", ByteArray(3))
             fail("A file shorter than the header cannot be a sealed file")
         } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("too small"))
+            assertTrue("the refusal should say the input is too small, said: ${expected.message}", expected.message!!.contains("too small"))
         }
     }
 
@@ -238,7 +238,7 @@ class CryptoTest {
             EncryptedFileFormat.open(key, "memories/notes.json", sealed)
             fail("A version this build does not understand must be reported, not attempted")
         } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message!!.contains("format version"))
+            assertTrue("the refusal should name the version, said: ${expected.message}", expected.message!!.contains("format version"))
         }
     }
 
@@ -251,8 +251,8 @@ class CryptoTest {
             "my mother's name is Ayesha and my bank account is 12345".toByteArray(),
         )
         val asText = String(sealed, Charsets.ISO_8859_1)
-        assertFalse(asText.contains("Ayesha"))
-        assertFalse(asText.contains("12345"))
+        assertFalse("the name leaked into the sealed bytes", asText.contains("Ayesha"))
+        assertFalse("the number leaked into the sealed bytes", asText.contains("12345"))
         assertNotEquals(0, sealed.size)
     }
 

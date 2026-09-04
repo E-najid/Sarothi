@@ -64,7 +64,10 @@ class UndoRegistryTest {
         val registry = UndoRegistry(invoker.invoke, capacity = 10)
         val action = registry.register("gmail", "t", "sent", "task-1")
 
-        assertTrue(registry.undo(action.id) is UndoOutcome.Reversed)
+        assertTrue(
+            "the first undo should reverse it",
+            registry.undo(action.id) is UndoOutcome.Reversed,
+        )
         val second = registry.undo(action.id)
 
         assertTrue("expected NothingToUndo, got $second", second is UndoOutcome.NothingToUndo)
@@ -90,8 +93,8 @@ class UndoRegistryTest {
 
         val outcome = registry.undo("undo-does-not-exist")
 
-        assertTrue(outcome is UndoOutcome.NothingToUndo)
-        assertTrue(invoker.calls.isEmpty())
+        assertTrue("expected NothingToUndo, got $outcome", outcome is UndoOutcome.NothingToUndo)
+        assertTrue("the plugin must not be called for an unknown action", invoker.calls.isEmpty())
     }
 
     /**
@@ -143,7 +146,7 @@ class UndoRegistryTest {
 
         val outcome = registry.undoLast(taskId = "task-A")
 
-        assertTrue(outcome is UndoOutcome.Reversed)
+        assertTrue("expected Reversed, got $outcome", outcome is UndoOutcome.Reversed)
         assertEquals(
             "only the task's own action may be reversed",
             listOf("gmail" to "a"),
@@ -172,7 +175,7 @@ class UndoRegistryTest {
 
         registry.clear()
 
-        assertTrue(registry.available().isEmpty())
-        assertTrue(invoker.calls.isEmpty())
+        assertTrue("clear() should empty the list", registry.available().isEmpty())
+        assertTrue("clear() is not an undo and must call no plugin", invoker.calls.isEmpty())
     }
 }

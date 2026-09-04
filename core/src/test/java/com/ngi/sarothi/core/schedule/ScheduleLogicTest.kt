@@ -79,7 +79,7 @@ class ScheduleLogicTest {
         assertEquals("Must be the next hour, not tomorrow morning", 10, result.hour)
         assertEquals(0, result.minute)
         assertEquals(4, result.dayOfMonth)
-        assertTrue(result.isAfter(from))
+        assertTrue("the next run must be in the future, got $result from $from", result.isAfter(from))
     }
 
     @Test
@@ -227,13 +227,22 @@ class ScheduleLogicTest {
     @Test
     fun all_requires_every_condition_to_hold() {
         val both = rule(titleContains = listOf("shipped"), bodyContains = listOf("tomorrow"))
-        assertTrue(both.matches(notification()))
+        assertTrue(
+            "both conditions hold, so an ALL rule should match",
+            both.matches(notification()),
+        )
         assertFalse(
             "ALL means both, so one match is not enough",
             both.matches(notification(text = "delayed by a week")),
         )
     }
 
+    /**
+     * titleContains is checked against the title and bodyContains against the body --
+     * they are not one pool of needles searched over the whole notification. The
+     * second case below puts "delayed" in the body for exactly that reason; the first
+     * version of this test put it in the title and failed, correctly.
+     */
     @Test
     fun any_requires_only_one_condition() {
         val either = rule(
@@ -241,34 +250,64 @@ class ScheduleLogicTest {
             bodyContains = listOf("delayed"),
             match = RuleMatch.ANY,
         )
-        assertTrue(either.matches(notification()))
-        assertTrue(either.matches(notification(title = "Order delayed", text = "sorry")))
-        assertFalse(either.matches(notification(title = "Order confirmed", text = "thank you")))
+        assertTrue(
+            "the title alone should trip an ANY rule",
+            either.matches(notification()),
+        )
+        assertTrue(
+            "the body alone should trip an ANY rule, without the title matching",
+            either.matches(notification(title = "Order update", text = "your parcel was delayed")),
+        )
+        assertFalse(
+            "ANY still means at least one condition, and neither holds here",
+            either.matches(notification(title = "Order confirmed", text = "thank you")),
+        )
     }
 
     @Test
     fun the_package_filter_blocks_notifications_from_other_apps() {
         val scoped = rule(packageNames = listOf("com.example.bank"), titleContains = listOf("otp"))
-        assertFalse(scoped.matches(notification(packageName = "com.example.shop", title = "otp 1234")))
-        assertTrue(scoped.matches(notification(packageName = "com.example.bank", title = "otp 1234")))
+        assertFalse(
+            "a different app must not trip the rule",
+            scoped.matches(notification(packageName = "com.example.shop", title = "otp 1234")),
+        )
+        assertTrue(
+            "the scoped app should trip it",
+            scoped.matches(notification(packageName = "com.example.bank", title = "otp 1234")),
+        )
     }
 
     /** A rule scoped to one app and nothing else watches all of that app's traffic. */
     @Test
     fun a_package_only_rule_matches_every_notification_from_that_app() {
         val scoped = rule(packageNames = listOf("com.example.bank"))
-        assertTrue(scoped.matches(notification(packageName = "com.example.bank", title = null, text = null)))
-        assertFalse(scoped.matches(notification(packageName = "com.other")))
+        assertTrue(
+            "every notification from the scoped app, whatever it says",
+            scoped.matches(notification(packageName = "com.example.bank", title = null, text = null)),
+        )
+        assertFalse(
+            "and nothing from anywhere else",
+            scoped.matches(notification(packageName = "com.other")),
+        )
     }
 
     @Test
     fun case_sensitivity_is_honoured_both_ways() {
         val insensitive = rule(titleContains = listOf("OTP"))
-        assertTrue(insensitive.matches(notification(title = "your otp is 4417")))
+        assertTrue(
+            "case-insensitive by default, so a lowercase otp still matches OTP",
+            insensitive.matches(notification(title = "your otp is 4417")),
+        )
 
         val sensitive = rule(titleContains = listOf("OTP"), caseSensitive = true)
-        assertFalse(sensitive.matches(notification(title = "your otp is 4417")))
-        assertTrue(sensitive.matches(notification(title = "your OTP is 4417")))
+        assertFalse(
+            "case-sensitive must not match a different case",
+            sensitive.matches(notification(title = "your otp is 4417")),
+        )
+        assertTrue(
+            "but must match the exact case",
+            sensitive.matches(notification(title = "your OTP is 4417")),
+        )
     }
 
     /** Without this a chatty app loops the agent, on battery and on the model budget. */
@@ -284,6 +323,7 @@ class ScheduleLogicTest {
             cooled.matches(notification(), nowEpochMillis = 10_000L + 600_000L),
         )
         assertTrue(
+            "past the cooldown window it must fire again",
             cooled.matches(notification(), nowEpochMillis = 10_000L + 31 * 60 * 1000L),
         )
     }
@@ -291,6 +331,7 @@ class ScheduleLogicTest {
     @Test
     fun a_disabled_rule_never_matches() {
         assertFalse(
+            "a disabled rule must never fire, however well the notification matches",
             rule(enabled = false, titleContains = listOf("shipped")).matches(notification()),
         )
     }
@@ -301,8 +342,14 @@ class ScheduleLogicTest {
      */
     @Test
     fun a_notification_with_no_title_or_body_does_not_crash_the_match() {
-        assertFalse(rule(titleContains = listOf("shipped")).matches(notification(title = null, text = null)))
-        assertTrue(rule(packageNames = listOf("com.example.shop")).matches(notification(title = null, text = null)))
+        assertFalse(
+            "a title condition cannot match a notification with no title",
+            rule(titleContains = listOf("shipped")).matches(notification(title = null, text = null)),
+        )
+        assertTrue(
+            "a package-only rule does not look at the title or body at all",
+            rule(packageNames = listOf("com.example.shop")).matches(notification(title = null, text = null)),
+        )
     }
 
     @Test
