@@ -938,8 +938,9 @@ jobs:
       - name: Count what ran on the device
         # connectedAndroidTest exits zero when there was no device to talk to and zero when
         # nothing matched. This is the guard the JVM suites already have: the claim "the
-        # device tests pass" has to have a count behind it.
-        if: success()
+        # device tests pass" has to have a count behind it. That is more true after a
+        # failure than before one, so this runs either way.
+        if: always()
         run: |
           set -uo pipefail
           counts=$(python3 scripts/count_unit_tests.py --require-nonzero --connected)
@@ -979,8 +980,13 @@ jobs:
         if: failure()
         run: |
           set -uo pipefail
+          # Whether the device was still there when Gradle gave up separates "the tests
+          # failed" from "the device went away mid-suite": both read the same in the exit
+          # status, and only one of them is a bug in Sarothi.
+          echo "::notice title=adb devices at failure::$(adb devices -l 2>&1 | tr '\n' ' ')"
           python3 scripts/report_instrumented_failure.py \
             --log instrumented.log \
+            --emulator-log emulator.log \
             -o instrumented-failure.md || true
           if [ -f instrumented-failure.md ]; then
             cat instrumented-failure.md >> "$GITHUB_STEP_SUMMARY"
