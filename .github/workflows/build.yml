@@ -758,9 +758,22 @@ jobs:
         # device failure is the one kind that cannot be reconstructed by reading a log --
         # it happened on an emulator that no longer exists. The failing test names and
         # messages go into the check annotations instead.
+        #
+        # Two reporters, because "the job failed" has three unrelated causes here: the
+        # androidTest sources did not compile (which the build job cannot catch, since it
+        # never compiles this source set), the emulator never became usable (so no test ran,
+        # which is not a pass), or tests ran and failed. The first script says which of the
+        # three it was and annotates compile errors with file and line; the second names the
+        # failing tests from the XML.
         if: failure()
         run: |
           set -uo pipefail
+          python3 scripts/report_instrumented_failure.py \
+            --log instrumented.log \
+            -o instrumented-failure.md || true
+          if [ -f instrumented-failure.md ]; then
+            cat instrumented-failure.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           python3 scripts/report_instrumented_failures.py -o instrumented-digest.md || true
           if [ -f instrumented-digest.md ]; then
             cat instrumented-digest.md >> "$GITHUB_STEP_SUMMARY"
@@ -781,6 +794,7 @@ jobs:
           path: |
             instrumented.log
             instrumented-digest.md
+            instrumented-failure.md
             */build/outputs/androidTest-results/**
             */build/reports/androidTests/**
           if-no-files-found: ignore
