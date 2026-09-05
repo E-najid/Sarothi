@@ -723,7 +723,10 @@ jobs:
             fi
             echo "::notice title=android tool ${tool}::${found:-not found}"
           done
-          echo "::notice title=installed system images::$(ls -1 "$root/system-images" 2>/dev/null | tr '\n' ' ')"
+          # Two levels deep: `system-images/android-34` existing says nothing about whether
+          # the google_apis x86_64 variant this job asks avdmanager for is actually there,
+          # and a missing variant is an AVD that cannot be created.
+          echo "::notice title=installed system images::$(ls -1 "$root/system-images" 2>/dev/null | tr '\n' ' ') | $(ls -1 "$root/system-images/android-${EMULATOR_API}" 2>/dev/null | tr '\n' ' ') | $(ls -1 "$root/system-images/android-${EMULATOR_API}/google_apis" 2>/dev/null | tr '\n' ' ')"
           echo "::notice title=kvm::$(ls -l /dev/kvm 2>&1 | head -1)"
 
       - name: Detect which modules have device tests
@@ -752,30 +755,46 @@ jobs:
         # "it was created with 96 MB of RAM" and "it booted and the suite failed" then look
         # identical -- the same exit code, no instrumented.log, three unrelated fixes. Every
         # step from here on writes what it decided into an annotation.
+        #
+        # avdmanager's exit status is not trusted on its own: it has been observed here to
+        # exit 0 and leave no AVD behind, which then fails two steps later as a missing
+        # config.ini with nothing to say about the cause. The test that matters is whether
+        # the file exists, and when it does not, avdmanager's own output becomes annotations.
         run: |
           set -uo pipefail
           root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           export ANDROID_SDK_ROOT="$root"
           image="system-images;android-${EMULATOR_API};google_apis;x86_64"
           avdmanager="$root/cmdline-tools/latest/bin/avdmanager"
+          ini="${ANDROID_AVD_HOME:-$HOME/.android/avd}/sarothi.avd/config.ini"
+          out=avdmanager.log
 
-          if ! echo no | "$avdmanager" create avd \
-              --name sarothi --package "$image" --device pixel_5 --force; then
-            echo "::warning title=avdmanager::the pixel_5 profile was refused; creating the AVD without one"
-            if ! echo no | "$avdmanager" create avd --name sarothi --package "$image" --force; then
-              echo "::error title=avdmanager could not create the AVD::package=$image; the system image is installed but no AVD could be made from it"
-              exit 1
+          echo "::notice title=avd home::ANDROID_AVD_HOME=${ANDROID_AVD_HOME:-unset}, using $(dirname "$(dirname "$ini")")"
+
+          created=0
+          for profile in pixel_5 pixel ""; do
+            args=(create avd --name sarothi --package "$image" --force)
+            if [ -n "$profile" ]; then args+=(--device "$profile"); fi
+            if echo no | "$avdmanager" "${args[@]}" > "$out" 2>&1 && [ -f "$ini" ]; then
+              created=1
+              echo "::notice title=avd created::profile=${profile:-none}, $ini exists"
+              break
             fi
+            echo "::warning title=avdmanager attempt::profile=${profile:-none} did not produce $ini"
+          done
+
+          if [ "$created" -ne 1 ]; then
+            # The only witness to why. Escaped because % and newlines terminate an
+            # annotation command early, and compiler output contains both.
+            tail -n 20 "$out" \
+              | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/^/::error title=avdmanager output::/'
+            echo "::error title=avdmanager could not create the AVD::package=$image; its own output is annotated above, and $(dirname "$ini") holds: $(ls -1 "$(dirname "$ini")" 2>/dev/null | tr '\n' ' ' || echo nothing)"
+            exit 1
           fi
 
           # State the memory once. avdmanager writes a profile default and anything appended
           # afterwards becomes a second hw.ramSize line in the same file, which is how an AVD
           # ends up asking for 3 GB and being given 96 MB.
-          ini="$HOME/.android/avd/sarothi.avd/config.ini"
-          if [ ! -f "$ini" ]; then
-            echo "::error title=the AVD has no config.ini::$ini is missing, so nothing can be launched"
-            exit 1
-          fi
           grep -v -E '^(hw\.ramSize|hw\.heapSize|disk\.dataPartition\.size)=' "$ini" > "$ini.new"
           {
             cat "$ini.new"
