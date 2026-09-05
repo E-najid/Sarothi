@@ -667,6 +667,27 @@ jobs:
           "$sdkmanager" "platform-tools" "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}" \
             "emulator" "system-images;android-${EMULATOR_API};google_apis;x86_64"
 
+          # The `find` fallback above is not defensive padding: this runner image ships a
+          # versioned cmdline-tools directory and no `latest` symlink, and the emulator
+          # action resolves avdmanager and sdkmanager through cmdline-tools/latest. Without
+          # the link it fails in seconds, before an AVD exists, and leaves no Gradle output
+          # behind -- which reads exactly like "the emulator would not boot".
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ ! -e "$root/cmdline-tools/latest" ]; then
+            newest="$(find "$root/cmdline-tools" -mindepth 1 -maxdepth 1 -type d ! -name latest \
+              | sort -V | tail -1)"
+            if [ -n "$newest" ]; then
+              ln -s "$newest" "$root/cmdline-tools/latest"
+              echo "linked cmdline-tools/latest -> $newest"
+            else
+              echo "::warning::no cmdline-tools directory to link as latest under $root"
+            fi
+          fi
+          for probe in avdmanager sdkmanager; do
+            [ -x "$root/cmdline-tools/latest/bin/$probe" ] \
+              || echo "::warning::$probe is not executable through cmdline-tools/latest"
+          done
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "${{ env.GRADLE_VERSION }}"
@@ -683,6 +704,27 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
+
+      - name: Record the device-test prerequisites in the annotations
+        # Job logs live on blob storage that tooling often cannot reach, and this job's most
+        # confusing failure mode -- dying in under a minute, before Gradle runs, with no
+        # instrumented.log to read -- is indistinguishable from a boot timeout unless the
+        # state that decides it is written down somewhere readable. Annotations are.
+        if: always()
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          echo "::notice title=android sdk root::ANDROID_HOME=${ANDROID_HOME:-unset} ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset} resolved=${root:-unset}"
+          echo "::notice title=cmdline-tools layout::$(ls -1 "$root/cmdline-tools" 2>/dev/null | tr '\n' ' ')"
+          for tool in sdkmanager avdmanager emulator adb; do
+            found="$(command -v "$tool" 2>/dev/null || true)"
+            if [ -z "$found" ] && [ -n "$root" ]; then
+              found="$(find "$root" -name "$tool" -type f 2>/dev/null | head -1)"
+            fi
+            echo "::notice title=android tool ${tool}::${found:-not found}"
+          done
+          echo "::notice title=installed system images::$(ls -1 "$root/system-images" 2>/dev/null | tr '\n' ' ')"
+          echo "::notice title=kvm::$(ls -l /dev/kvm 2>&1 | head -1)"
 
       - name: Detect which modules have device tests
         id: targets
@@ -714,6 +756,10 @@ jobs:
           # the memory-tier assertions measure the runner instead of the code.
           ram-size: 3072M
           disk-size: 8G
+          # The action's own default is 600s. A cold boot of a google_apis x86_64 image on a
+          # shared runner, with no snapshot to resume, is not reliably inside that, and a
+          # boot timeout looks exactly like a suite that never ran.
+          emulator-boot-timeout: 1200
           disable-animations: true
           # -no-snapshot means every run boots cold, so "fresh install: no vault, no models,
           # no permissions" is a fact about the device instead of an assumption inherited
@@ -775,6 +821,16 @@ jobs:
             cat instrumented-failure.md >> "$GITHUB_STEP_SUMMARY"
           fi
           python3 scripts/report_instrumented_failures.py -o instrumented-digest.md || true
+          # Whether an AVD exists at all separates two failures that look identical from the
+          # exit code: the device was never created, and the device was created but never
+          # finished booting. The first is an SDK path problem, the second a KVM or image
+          # problem, and they are not fixed the same way.
+          root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          avds="$("$root/emulator/emulator" -list-avds 2>&1 | tr '\n' ' ')"
+          echo "::error title=emulator state::AVDs known to the emulator binary: ${avds:-none}; $HOME/.android/avd holds: $(ls -1 "$HOME/.android/avd" 2>/dev/null | tr '\n' ' ' || echo nothing)"
+          if [ -f "$HOME/.android/avd/test.avd/config.ini" ]; then
+            echo "::error title=avd config::$(grep -E 'hw.ramSize|disk.dataPartition.size|image.sysdir' "$HOME/.android/avd/test.avd/config.ini" | tr '\n' ' ')"
+          fi
           if [ -f instrumented-digest.md ]; then
             cat instrumented-digest.md >> "$GITHUB_STEP_SUMMARY"
           fi
