@@ -746,29 +746,114 @@ jobs:
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "Instrumented targets: $targets"
 
-      - name: Run the suites on the emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ env.EMULATOR_API }}
-          arch: x86_64
-          target: google_apis
-          # Sarothi is built for a 3 GB phone. Giving the emulator less than that would make
-          # the memory-tier assertions measure the runner instead of the code.
-          ram-size: 3072M
-          disk-size: 8G
-          # The action's own default is 600s. A cold boot of a google_apis x86_64 image on a
-          # shared runner, with no snapshot to resume, is not reliably inside that, and a
-          # boot timeout looks exactly like a suite that never ran.
-          emulator-boot-timeout: 1200
-          disable-animations: true
-          # -no-snapshot means every run boots cold, so "fresh install: no vault, no models,
-          # no permissions" is a fact about the device instead of an assumption inherited
-          # from whatever the previous run left behind.
-          emulator-options: -no-window -no-snapshot -no-boot-anim -noaudio -gpu swiftshader_indirect
-          script: |
-            set -uo pipefail
-            gradle --no-daemon --stacktrace --console=plain ${{ steps.targets.outputs.targets }} 2>&1 | tee instrumented.log
-            exit "${PIPESTATUS[0]}"
+      - name: Create the AVD
+        # Created here rather than left to an action, for one reason: when an action fails,
+        # its output is on blob storage tooling cannot reach, and "the AVD was never created",
+        # "it was created with 96 MB of RAM" and "it booted and the suite failed" then look
+        # identical -- the same exit code, no instrumented.log, three unrelated fixes. Every
+        # step from here on writes what it decided into an annotation.
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          export ANDROID_SDK_ROOT="$root"
+          image="system-images;android-${EMULATOR_API};google_apis;x86_64"
+          avdmanager="$root/cmdline-tools/latest/bin/avdmanager"
+
+          if ! echo no | "$avdmanager" create avd \
+              --name sarothi --package "$image" --device pixel_5 --force; then
+            echo "::warning title=avdmanager::the pixel_5 profile was refused; creating the AVD without one"
+            if ! echo no | "$avdmanager" create avd --name sarothi --package "$image" --force; then
+              echo "::error title=avdmanager could not create the AVD::package=$image; the system image is installed but no AVD could be made from it"
+              exit 1
+            fi
+          fi
+
+          # State the memory once. avdmanager writes a profile default and anything appended
+          # afterwards becomes a second hw.ramSize line in the same file, which is how an AVD
+          # ends up asking for 3 GB and being given 96 MB.
+          ini="$HOME/.android/avd/sarothi.avd/config.ini"
+          if [ ! -f "$ini" ]; then
+            echo "::error title=the AVD has no config.ini::$ini is missing, so nothing can be launched"
+            exit 1
+          fi
+          grep -v -E '^(hw\.ramSize|hw\.heapSize|disk\.dataPartition\.size)=' "$ini" > "$ini.new"
+          {
+            cat "$ini.new"
+            # Sarothi is built for a 3 GB phone. Less than that would make the memory-tier
+            # assertions measure the runner instead of the code.
+            echo "hw.ramSize=3072"
+            echo "hw.heapSize=512"
+            echo "disk.dataPartition.size=6G"
+          } > "$ini"
+          rm -f "$ini.new"
+          decided="$(grep -E '^(hw\.ramSize|hw\.heapSize|disk\.dataPartition\.size|image\.sysdir\.1)=' "$ini" | tr '\n' ' ')"
+          echo "::notice title=avd config::$decided"
+
+      - name: Boot the emulator
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          adb="$root/platform-tools/adb"
+
+          "$root/emulator/emulator" -avd sarothi \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -gpu swiftshader_indirect -memory 3072 -partition-size 6144 \
+            -camera-back none -camera-front none \
+            > emulator.log 2>&1 &
+          echo "$!" > emulator.pid
+          echo "emulator started as process $(cat emulator.pid), logging to emulator.log"
+
+          if ! timeout 300 "$adb" wait-for-device; then
+            echo "::error title=adb never saw the emulator::it did not come online within 300s of being started"
+            python3 scripts/report_instrumented_failure.py --emulator-log emulator.log || true
+            exit 1
+          fi
+
+          # Cold boot every time, so "fresh install: no vault, no models, no permissions" is
+          # a fact about the device rather than something inherited from a previous run.
+          deadline=$(( $(date +%s) + 900 ))
+          booted=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+              booted=1
+              break
+            fi
+            if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then
+              echo "::error title=the emulator exited during boot::its own output is annotated below"
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "$booted" ]; then
+            # The emulator's own output is the only account of what went wrong, and it is
+            # about to be discarded with the runner.
+            python3 scripts/report_instrumented_failure.py --emulator-log emulator.log || true
+            exit 1
+          fi
+
+          echo "::notice title=emulator booted::android $("$adb" shell getprop ro.build.version.release | tr -d '\r') / api $("$adb" shell getprop ro.build.version.sdk | tr -d '\r') / $("$adb" shell getprop ro.product.cpu.abi | tr -d '\r') / $("$adb" shell getprop ro.product.model | tr -d '\r')"
+          # Animations off, so a Compose test is not asserting against a transition that is
+          # still running.
+          for scale in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$scale" 0 || true
+          done
+
+      - name: Run the suites on the device
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --stacktrace --console=plain ${{ steps.targets.outputs.targets }} 2>&1 | tee instrumented.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Stop the emulator
+        if: always()
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -f emulator.pid ]; then
+            "$root/platform-tools/adb" emu kill > /dev/null 2>&1 || true
+            kill "$(cat emulator.pid)" > /dev/null 2>&1 || true
+          fi
 
       - name: Count what ran on the device
         # connectedAndroidTest exits zero when there was no device to talk to and zero when
@@ -851,6 +936,7 @@ jobs:
             instrumented.log
             instrumented-digest.md
             instrumented-failure.md
+            emulator.log
             */build/outputs/androidTest-results/**
             */build/reports/androidTests/**
           if-no-files-found: ignore

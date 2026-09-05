@@ -75,6 +75,76 @@ def relative(path: str) -> str:
     return path
 
 
+EMULATOR_MARKERS = (
+    "PANIC",
+    "ERROR",
+    "error:",
+    "Error:",
+    "failed",
+    "Failed",
+    "cannot",
+    "Cannot",
+    "not found",
+    "No such",
+    "denied",
+    "KVM",
+    "acceleration",
+    "qemu",
+    "WARNING: ",
+)
+
+
+def mine_emulator_log(path: Path, limit: int = 25) -> list[str]:
+    """Put the emulator's own account of a failed boot into the annotations.
+
+    When the device never comes up there is no Gradle output, no instrumentation XML and no
+    test name to report -- the only witness is what the emulator binary printed, and it is
+    discarded with the runner. So the lines that look like a reason go out as annotations,
+    which are readable from the check-run API without the job log.
+    """
+    if not path.is_file():
+        annotate("no emulator output", f"{path} was not produced, so the emulator never started")
+        return [f"`{path}` was not produced: the emulator never started."]
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    reasons = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped in reasons:
+            continue
+        if any(marker in stripped for marker in EMULATOR_MARKERS):
+            reasons.append(stripped)
+
+    if not reasons:
+        annotate(
+            "the emulator printed nothing that looks like a reason",
+            f"{len(lines)} line(s) of output, none matching an error marker; the tail is "
+            f"'{lines[-1][:200] if lines else ''}'",
+        )
+        return [
+            f"`{path}` holds {len(lines)} line(s), none of which looks like a reason.",
+            "",
+            "```",
+            *(line[:200] for line in lines[-12:]),
+            "```",
+        ]
+
+    for reason in reasons[:limit]:
+        annotate("emulator", reason[:300])
+    if len(reasons) > limit:
+        annotate("emulator", f"{len(reasons) - limit} further error line(s) in {path}")
+
+    digest = [
+        f"**The emulator did not become usable.** {len(reasons)} line(s) of its own output "
+        "look like the reason:",
+        "",
+        "```",
+        *(reason[:200] for reason in reasons[:limit]),
+        "```",
+    ]
+    return digest
+
+
 def classify(lines: list[str]) -> tuple[list[dict], list[str], list[str]]:
     """Returns (compile errors, failed tasks, emulator lines) found in the log."""
     errors: list[dict] = []
@@ -123,12 +193,17 @@ def annotate(level: str, message: str, path: str | None = None, line: int | None
         properties.append(f"line={line}")
     # Newlines would end the annotation command early.
     text = " ".join(message.split())
-    print(f"::error {','.join(properties)}::{text}" if path or line else f"::error ::{text}")
+    print(f"::error {','.join(properties)}::{text}")
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--log", default="instrumented.log", help="teed Gradle output")
+    parser.add_argument(
+        "--emulator-log",
+        default=None,
+        help="the emulator's own output, mined when the device never became usable",
+    )
     parser.add_argument("-o", "--output", default=None, help="where to write a markdown digest")
     parser.add_argument(
         "--max",
@@ -141,13 +216,16 @@ def main(argv: list[str]) -> int:
     log = Path(args.log)
     digest: list[str] = []
 
+    if args.emulator_log:
+        digest += mine_emulator_log(Path(args.emulator_log))
+
     if not log.is_file():
         message = (
             f"no {args.log} was captured, so the job failed before Gradle ran -- SDK install, "
-            "KVM setup or the emulator action itself"
+            "AVD creation, or the emulator never finished booting"
         )
         annotate("instrumented job failed with no Gradle output", message)
-        digest += ["### Instrumentation tests", "", f"The job failed before Gradle ran: {message}."]
+        digest += ["", "### Instrumentation tests", "", f"The job failed before Gradle ran: {message}."]
         write_digest(args.output, digest)
         return 0
 
