@@ -784,13 +784,74 @@ jobs:
           done
 
           if [ "$created" -ne 1 ]; then
-            # The only witness to why. Escaped because % and newlines terminate an
-            # annotation command early, and compiler output contains both.
+            # The only witness to why. Escaped because % and carriage returns terminate an
+            # annotation command early, and tool output contains both.
             tail -n 20 "$out" \
               | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/^/::error title=avdmanager output::/'
-            echo "::error title=avdmanager could not create the AVD::package=$image; its own output is annotated above, and $(dirname "$ini") holds: $(ls -1 "$(dirname "$ini")" 2>/dev/null | tr '\n' ' ' || echo nothing)"
-            exit 1
+            # avdmanager asks "Do you wish to create a custom hardware profile? [no]", reads
+            # the answer off a pipe, and has been seen here to stop there -- exit status 0,
+            # no AVD, no error text. That is indistinguishable from its successful output.
+            # An AVD is two files the emulator reads, so write them instead of depending on
+            # a prompt being answered the way one interactive terminal would answer it.
+            echo "::warning title=avdmanager::no AVD was produced by any profile; writing the AVD definition directly"
+            avd_dir="$(dirname "$ini")"
+            avd_home="$(dirname "$avd_dir")"
+            mkdir -p "$avd_dir"
+            printf 'avd.ini.encoding=UTF-8\npath=%s\npath.rel=avd/sarothi.avd\ntarget=android-%s\n' \
+              "$avd_dir" "$EMULATOR_API" > "$avd_home/sarothi.ini"
+            {
+              printf 'AvdId=sarothi\n'
+              printf 'PlayStore.enabled=false\n'
+              printf 'abi.type=x86_64\n'
+              printf 'avd.ini.displayname=sarothi\n'
+              printf 'avd.ini.encoding=UTF-8\n'
+              printf 'disk.dataPartition.size=6G\n'
+              printf 'hw.accelerometer=yes\n'
+              printf 'hw.audioInput=no\n'
+              printf 'hw.battery=yes\n'
+              printf 'hw.camera.back=none\n'
+              printf 'hw.camera.front=none\n'
+              printf 'hw.cpu.arch=x86_64\n'
+              printf 'hw.cpu.ncore=4\n'
+              printf 'hw.dPad=no\n'
+              printf 'hw.gps=yes\n'
+              printf 'hw.gpu.enabled=yes\n'
+              printf 'hw.gpu.mode=auto\n'
+              printf 'hw.initialOrientation=Portrait\n'
+              printf 'hw.keyboard=yes\n'
+              printf 'hw.lcd.density=440\n'
+              printf 'hw.lcd.height=2340\n'
+              printf 'hw.lcd.width=1080\n'
+              printf 'hw.mainKeys=no\n'
+              printf 'hw.ramSize=3072\n'
+              printf 'hw.sdCard=no\n'
+              printf 'hw.sensors.orientation=yes\n'
+              printf 'hw.sensors.proximity=yes\n'
+              printf 'hw.trackBall=no\n'
+              printf 'image.sysdir.1=system-images/android-%s/google_apis/x86_64/\n' "$EMULATOR_API"
+              printf 'runtime.network.latency=none\n'
+              printf 'runtime.network.speed=full\n'
+              printf 'showDeviceFrame=no\n'
+              printf 'skin.dynamic=yes\n'
+              printf 'tag.display=Google APIs\n'
+              printf 'tag.id=google_apis\n'
+              printf 'target=android-%s\n' "$EMULATOR_API"
+              printf 'vm.heapSize=512\n'
+            } > "$ini"
+            [ -f "$ini" ] || { echo "::error title=the AVD could not be written::$ini is still missing"; exit 1; }
+            created=1
           fi
+
+          # The emulator's own view is the check that matters: an AVD on disk that the
+          # emulator binary cannot see is the failure mode that looks like a boot timeout.
+          visible="$("$root/emulator/emulator" -list-avds 2>&1 | tr '\n' ' ')"
+          case " $visible " in
+            *" sarothi "*) echo "::notice title=emulator sees the AVD::$visible" ;;
+            *)
+              echo "::error title=the emulator cannot see the AVD::-list-avds says '${visible:-nothing}'; $ini exists but is not being found, which points at ANDROID_AVD_HOME (${ANDROID_AVD_HOME:-unset}) or a config.ini the emulator rejects"
+              exit 1
+              ;;
+          esac
 
           # State the memory once. avdmanager writes a profile default and anything appended
           # afterwards becomes a second hw.ramSize line in the same file, which is how an AVD
