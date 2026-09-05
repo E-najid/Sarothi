@@ -2,13 +2,10 @@ package com.ngi.sarothi.app.ui
 
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
-import androidx.compose.ui.test.assertDoesNotExist
-import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasSetTextAction
-import androidx.compose.ui.test.hasTextStartingWith
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNode
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -198,4 +195,14 @@ class MainActivityNavigationTest {
             compose.onAllNodesWithText("Notification access").fetchSemanticsNodes().size,
         )
     }
+}
+
+/**
+ * A prefix matcher, because Compose ships substring matching and nothing that anchors to the
+ * start of a text node. The memory-tier read-out is one text node holding "Memory tier: <TIER>",
+ * and matching the label rather than the whole string is what lets the assertion below check the
+ * value the device actually computed instead of a value this test guessed at.
+ */
+private fun hasTextStartingWith(prefix: String) = SemanticsMatcher("Text starts with '$prefix'") { node ->
+    node.config.getOrNull(SemanticsProperties.Text)?.any { it.startsWith(prefix) } == true
 }

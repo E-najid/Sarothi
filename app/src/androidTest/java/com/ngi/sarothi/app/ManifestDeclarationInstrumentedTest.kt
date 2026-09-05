@@ -82,7 +82,7 @@ class ManifestDeclarationInstrumentedTest {
         ).filter { it.serviceInfo?.packageName == context.packageName }
         assertTrue(
             "Settings would not list Sarothi: no service answers ${AccessibilityService.SERVICE_INTERFACE}",
-            listed.any { it.name == ACCESSIBILITY_SERVICE_CLASS },
+            listed.any { it.serviceInfo?.name == ACCESSIBILITY_SERVICE_CLASS },
         )
 
         val configResource = info.metaData?.getInt("android.accessibilityservice") ?: 0
@@ -213,7 +213,7 @@ class ManifestDeclarationInstrumentedTest {
         )
         assertTrue("BootReceiver must be exported to receive BOOT_COMPLETED", boot!!.exported)
 
-        val byAction = packageManager.queryIntentReceivers(
+        val byAction = packageManager.queryBroadcastReceivers(
             Intent(Intent.ACTION_BOOT_COMPLETED),
             0,
         ).filter { it.activityInfo.packageName == context.packageName }
