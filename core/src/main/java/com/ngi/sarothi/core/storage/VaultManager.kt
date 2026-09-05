@@ -6,6 +6,7 @@ import android.net.Uri
 import com.ngi.sarothi.core.crypto.KdfParameters
 import com.ngi.sarothi.core.crypto.MasterKeyManager
 import com.ngi.sarothi.core.crypto.EncryptedFileFormat
+import com.ngi.sarothi.core.crypto.PasswordBytes
 import com.ngi.sarothi.core.crypto.SecretStore
 import com.ngi.sarothi.core.crypto.VaultSecurity
 import com.ngi.sarothi.core.error.VaultLockedException
@@ -556,8 +557,8 @@ class VaultManager(
         // downstream consumed either array, and a passphrase left sitting in a CharArray
         // is one heap dump away from being readable.
         fun refuse(reason: String): PassphraseChange.Refused {
-            currentPassword.fill(0)
-            newPassword.fill(0)
+            PasswordBytes.wipe(currentPassword)
+            PasswordBytes.wipe(newPassword)
             return PassphraseChange.Refused(reason)
         }
 
@@ -574,7 +575,7 @@ class VaultManager(
         if (!masterKeys.verifyPassword(currentManifest.security, currentPassword, recordFailure = true)) {
             val state = masterKeys.lockout.state()
             // verifyPassword consumed the current passphrase; the new one was nobody's yet.
-            newPassword.fill(0)
+            PasswordBytes.wipe(newPassword)
             return@withContext PassphraseChange.Refused(
                 "That is not the passphrase this vault was sealed with. " +
                     if (state.lockedUntilEpochMillis != null) {

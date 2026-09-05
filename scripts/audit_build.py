@@ -859,6 +859,38 @@ for path in kt_files:
             f"never compiles it, so only the instrumented job would have caught it"
         )
 
+# ------------------------- 13. a CharArray wiped with an Int literal
+#
+# `ByteArray.fill(0)` compiles: Kotlin reads the literal 0 as the Byte the parameter asks
+# for. `CharArray.fill(0)` does not, because there is no Char with that literal spelling,
+# and the compiler says only "actual type is kotlin.Int, but kotlin.Char was expected"
+# without naming the array. Every passphrase in this codebase is a CharArray and every key
+# is a ByteArray, so the two are easy to confuse in exactly the code that is supposed to
+# wipe them -- and a wipe that does not compile is a wipe that does not happen.
+CHAR_ARRAY_PARAMS = re.compile(r"\b(\w+)\s*:\s*CharArray\??\b")
+BYTE_ARRAY_PARAMS = re.compile(r"\b(\w+)\s*:\s*ByteArray\??\b")
+
+for path in kt_files:
+    text = path.read_text(encoding="utf-8")
+    char_arrays = set(CHAR_ARRAY_PARAMS.findall(text))
+    if not char_arrays:
+        continue
+    # PasswordBytes.wipe is overloaded on exactly this pair, so one file legitimately
+    # declares the same parameter name as both. Where a name is used for both types the
+    # file's own signatures decide which fill() applies, and this check stays out of it --
+    # scoping by function body would be the alternative, and a false positive here would
+    # teach people to ignore the audit.
+    byte_arrays = set(BYTE_ARRAY_PARAMS.findall(text))
+    for match in re.finditer(r"\b(\w+)\.fill\(0\)", text):
+        name = match.group(1)
+        if name not in char_arrays or name in byte_arrays:
+            continue
+        line = text[: match.start()].count("\n") + 1
+        errors.append(
+            f"{rel(path)}:{line}: '{name}' is a CharArray, so `{name}.fill(0)` does not "
+            f"compile -- wipe it with PasswordBytes.wipe({name}) or {name}.fill('\\u0000')"
+        )
+
 # ------------------------------------------------------------- report
 
 print(f"scanned {len(kt_files)} Kotlin files across {MODULES}\n")
