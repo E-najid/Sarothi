@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Notification small icon for every foreground service Sarothi runs (model
+  downloads, screen capture, scheduled tasks, geofence watching).
+
+  Status bar icons are rendered as a silhouette: Android tints them to match the
+  system theme and ignores any colour, so this is a single flat path with no fill
+  colour of its own beyond white. The mark is the same chariot wheel as
+  branding/logo.svg reduced to what stays legible at 24dp - the four cardinal
+  spokes survive, the gradient tile and the accent dots do not.
+
+  This lives in :core rather than :app because android.nonTransitiveRClass=true
+  means :core can only reference resources it declares itself.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <!-- Outer rim of the wheel. -->
+    <path
+        android:pathData="M12,2.6 A9.4,9.4 0 1,0 12,21.4 A9.4,9.4 0 1,0 12,2.6 Z
+                          M12,4.4 A7.6,7.6 0 1,1 12,19.6 A7.6,7.6 0 1,1 12,4.4 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Four cardinal spokes. -->
+    <path
+        android:pathData="M11.15,4.4 h1.7 v5.1 h-1.7 z
+                          M11.15,14.5 h1.7 v5.1 h-1.7 z
+                          M4.4,11.15 h5.1 v1.7 h-5.1 z
+                          M14.5,11.15 h5.1 v1.7 h-5.1 z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Hub. -->
+    <path
+        android:pathData="M12,9.6 A2.4,2.4 0 1,0 12,14.4 A2.4,2.4 0 1,0 12,9.6 Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The complete Sarothi mark exactly as authored in branding/logo.svg, including
+     the rounded gradient tile. Used in-app (onboarding, about, empty states). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="120dp"
+    android:height="120dp"
+    android:viewportWidth="380"
+    android:viewportHeight="380">
+
+    <!-- rect x=30 y=30 w=320 h=320 rx=72 fill=url(#bgGrad) -->
+    <path android:pathData="M102,30 H278 A72,72 0 0,1 350,102 V278 A72,72 0 0,1 278,350 H102 A72,72 0 0,1 30,278 V102 A72,72 0 0,1 102,30 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="30"
+                android:endX="350"
+                android:endY="350">
+                <item android:offset="0" android:color="#FF2B6CB0" />
+                <item android:offset="1" android:color="#FF1A4971" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:pathData="M82,190 A108,108 0 1,0 298,190 A108,108 0 1,0 82,190 Z"
+        android:strokeColor="#EAF3FB"
+        android:strokeWidth="10" />
+    <path
+        android:pathData="M170,190 A20,20 0 1,0 210,190 A20,20 0 1,0 170,190 Z"
+        android:fillColor="#EAF3FB" />
+    <path
+        android:pathData="M190,82 L190,128 M298,190 L252,190 M190,298 L190,252 M82,190 L128,190"
+        android:strokeColor="#EAF3FB"
+        android:strokeWidth="10"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M181,102 A9,9 0 1,0 199,102 A9,9 0 1,0 181,102 Z
+                          M269,190 A9,9 0 1,0 287,190 A9,9 0 1,0 269,190 Z
+                          M181,278 A9,9 0 1,0 199,278 A9,9 0 1,0 181,278 Z
+                          M93,190 A9,9 0 1,0 111,190 A9,9 0 1,0 93,190 Z"
+        android:fillColor="#7FD4FF" />
+</vector>

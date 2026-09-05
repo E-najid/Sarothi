@@ -1,0 +1,1102 @@
+# Sarothi CI.
+#
+# Two things about this repository shape the workflow:
+#
+#   1. The Gradle wrapper jar is not committed (it is a binary blob and this
+#      project was authored without network access). `gradle/actions/setup-gradle`
+#      therefore supplies Gradle 8.11.1 directly, matching
+#      gradle/wrapper/gradle-wrapper.properties. A `gradle-wrapper` job
+#      regenerates the wrapper and publishes it as an artifact so it can be
+#      committed once and CI can switch to ./gradlew.
+#
+#   2. `:app` is declared in settings.gradle.kts but not written yet, so no APK
+#      can be produced. The build job compiles the two library modules that do
+#      exist and *automatically* adds :app:assembleDebug the moment
+#      app/build.gradle.kts appears -- no workflow edit needed. Until then the
+#      APK step reports itself skipped rather than silently passing.
+#
+# The native runtime (llama.cpp / whisper.cpp) is opt-in: third_party/ is
+# gitignored, and core/build.gradle.kts already skips CMake when it is absent,
+# so the default path is a fast Kotlin-only build in which the model runtimes
+# report themselves unavailable.
+
+name: build
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  # Weekly upstream check: the pinned model files live on Hugging Face and could
+  # be replaced or removed without any commit here. Drift is only visible if
+  # something looks on a schedule.
+  schedule:
+    - cron: "20 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      native:
+        description: "Build with the native runtime (clones + compiles llama.cpp and whisper.cpp; adds ~20 min)"
+        type: boolean
+        default: false
+      release:
+        description: "Also produce an unsigned release build"
+        type: boolean
+        default: false
+      verify_upstream:
+        description: "Compare ModelCatalog pins against the Hugging Face API (metadata only, no downloads)"
+        type: boolean
+        default: false
+
+# A force-push to a PR branch should not keep the superseded build running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Needed so a failed build can post the compiler output as a PR comment. Raw
+  # job logs live on blob storage that is awkward to reach from tooling, and a
+  # wall of Gradle output nobody reads is worse than useless -- the errors should
+  # arrive where the reviewer already is.
+  pull-requests: write
+
+env:
+  # Pinned here as well as in gradle-wrapper.properties so a wrapper-less run and
+  # a wrapper run cannot drift apart.
+  GRADLE_VERSION: "8.11.1"
+  COMPILE_SDK: "35"
+  BUILD_TOOLS: "35.0.0"
+  NDK_VERSION: "27.0.12077973"
+  CMAKE_VERSION: "3.22.1"
+  # The device suite runs on this system image. Pinned because an emulator level is a
+  # compatibility claim: API-level guards in the code are only exercised against the
+  # level that is actually booted.
+  EMULATOR_API: "34"
+  # Keeps AGP from phoning home for analytics on a shared runner.
+  DO_NOT_TRACK: "1"
+
+jobs:
+  # --------------------------------------------------------------- static checks
+  # No JDK, no Android SDK, no Gradle. Runs the proofs that do not need a device:
+  # the Argon2id implementation against RFC 9106, delimiter balance across every
+  # Kotlin source, and the import/resource/manifest/catalogue audit.
+  verify:
+    name: Static verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Argon2id against RFC 9106 test vectors
+        run: python3 scripts/verify_argon2_rfc9106.py
+
+      - name: Kotlin delimiter balance
+        run: python3 scripts/check_kotlin_braces.py
+
+      - name: Build audit (imports, resources, manifests, version catalog)
+        run: python3 scripts/audit_build.py
+
+      - name: Model catalogue self-consistency
+        # Offline: proves every pin is well-formed, unique and locatable upstream.
+        # No network, so it cannot flake.
+        run: python3 scripts/verify_model_catalog.py --offline
+
+      - name: Model catalogue vs upstream
+        # Remote: catches real drift in the published files. Metadata only — the
+        # Hugging Face API returns each file's size and LFS object id (which is
+        # the SHA-256), so nothing is downloaded. Opt-in because it depends on a
+        # third-party service being reachable and should not redden an unrelated
+        # PR when HF has an outage.
+        if: ${{ inputs.verify_upstream == true || github.event_name == 'schedule' }}
+        continue-on-error: true
+        run: python3 scripts/verify_model_catalog.py --remote
+
+      - name: Native dependency status
+        # Informational: third_party/ is gitignored, so this is expected to report
+        # "not fetched" on a clean checkout. It fails the job only if a clone is
+        # present but pinned to the wrong revision.
+        run: bash scripts/setup_native.sh --check || true
+
+  # ------------------------------------------------------------------ the build
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    # Generous enough for the native variant (compiling llama.cpp for two ABIs is
+    # the long pole); a Kotlin-only run finishes in a fraction of this.
+    timeout-minutes: 90
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select variant
+        id: variant
+        run: |
+          native=false
+          if [ "${{ inputs.native }}" = "true" ]; then native=true; fi
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then native=true; fi
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+          echo "Building with native runtime: $native"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            # Older runner images put cmdline-tools under a versioned directory.
+            sdkmanager="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          fi
+          [ -n "$sdkmanager" ] || { echo "sdkmanager not found on runner" >&2; exit 1; }
+
+          # AGP will not auto-install anything until the licences are accepted.
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" "platform-tools" "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}"
+
+          if [ "${{ steps.variant.outputs.native }}" = "true" ]; then
+            "$sdkmanager" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+          fi
+
+      - name: Fetch native dependencies
+        if: steps.variant.outputs.native == 'true'
+        run: bash scripts/setup_native.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "${{ env.GRADLE_VERSION }}"
+          # Cache the Gradle user home (dependency + wrapper caches) but not the
+          # build directories: AGP outputs are not reliably relocatable.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Detect which modules can be assembled
+        id: modules
+        run: |
+          set -euo pipefail
+          targets=":core:assembleDebug :plugins:assembleDebug"
+
+          if [ -f app/build.gradle.kts ]; then
+            targets="$targets :app:assembleDebug"
+            echo "app_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "app_present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::app/build.gradle.kts is missing, so no APK can be produced. Building the library modules only."
+          fi
+
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Gradle targets: $targets"
+
+      - name: Assemble
+        # tee rather than letting Gradle own stdout: when this fails the log is
+        # still on the runner for the reporting step below to mine.
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --stacktrace --console=plain ${{ steps.modules.outputs.targets }} 2>&1 | tee build.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Unit tests
+        # Runs the JVM suites and counts what actually executed. The count is not
+        # decoration. A Gradle test task with no matching sources succeeds, so before
+        # this existed "the tests pass" was true of a repository containing none: the
+        # green tick and the PR comment both described a suite that never ran. Mining
+        # the XML results turns an empty suite into a build failure, so the claim can
+        # only be made when there is something behind it.
+        id: tests
+        continue-on-error: false
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --stacktrace --console=plain \
+            :core:testDebugUnitTest :plugins:testDebugUnitTest 2>&1 | tee -a build.log
+          status="${PIPESTATUS[0]}"
+
+          # Counted even when the build failed, so a red run still reports how far the
+          # suites got rather than going quiet.
+          counts=$(python3 scripts/count_unit_tests.py --require-nonzero)
+          count_status=$?
+          read -r total failed skipped <<< "$counts"
+          # An empty read means the counting itself failed, which must not be
+          # reported as "0 failed" and mistaken for a clean run.
+          total="${total:-}"; failed="${failed:-}"; skipped="${skipped:-}"
+          if [ -z "$total" ] || [ -z "$failed" ] || [ -z "$skipped" ]; then
+            echo "::error::could not count the unit test results (counter said: $counts)"
+            exit 1
+          fi
+          # Exit 2 is a result file that could not be parsed, which is a truncated
+          # suite rather than an absent one; exit 1 is the empty-suite guard below,
+          # already reported. Either way the Gradle status still decides the build.
+          if [ "$count_status" -eq 2 ]; then
+            echo "::error::a unit test result file could not be parsed; the suite may be truncated"
+            exit 2
+          fi
+
+          {
+            echo "tests_total=$total"
+            echo "tests_failed=$failed"
+            echo "tests_skipped=$skipped"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Unit tests"
+            echo
+            if [ "$total" -eq 0 ]; then
+              echo "No tests ran."
+            else
+              echo "**$total** ran, **$failed** failed, **$skipped** skipped."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if [ "$total" -eq 0 ]; then
+            echo "::error::the unit test tasks succeeded without executing a single test"
+            echo "::error::an empty suite cannot be reported as passing"
+            exit 1
+          fi
+          echo "::notice::$total unit tests ran, $failed failed, $skipped skipped"
+
+      # Runs only when something above failed. Raw job logs live on blob storage
+      # that tooling often cannot reach, and scrolling four thousand lines of
+      # Gradle output to find twenty lines of compiler errors is how a first
+      # build never gets fixed. This mines the log and puts the signal where the
+      # reviewer already is.
+      - name: Report failure
+        # Reporting is best-effort and never fails the job: the build is already red
+        # from the step above, and a second failure here would only add noise. What
+        # matters is that the PR never ends up describing an older commit, because a
+        # stale comment reads exactly like a current one.
+        #
+        # Every decision point also emits a workflow-command annotation. Job logs and
+        # artifacts live on blob storage that tooling frequently cannot reach, while
+        # check-run annotations are served by the ordinary REST API -- so this is the
+        # one diagnostic channel that survives when everything else is unreadable.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          summary="$GITHUB_STEP_SUMMARY"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # On a pull_request event github.sha is the synthetic merge commit GitHub
+          # builds to test the PR. It is not on the branch, so a reader who copies it out
+          # of the report finds nothing. Stamp the head commit instead.
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          [ -n "$head_sha" ] || head_sha="${{ github.sha }}"
+          gh_err=$(mktemp)
+
+          if [ ! -f build.log ]; then
+            echo "No build.log captured; the failure happened before Gradle ran." | tee -a "$summary"
+            echo "::error::report: no build.log, so nothing was mined and no comment was posted"
+            exit 0
+          fi
+
+          if ! python3 scripts/report_build_failure.py build.log \
+                 -o failure-report.md \
+                 --head-sha "$head_sha" \
+                 --run-url "$run_url" 2> >(tee "$gh_err" >&2); then
+            echo "report_build_failure.py failed; the raw log is in the build-log artifact." | tee -a "$summary"
+            echo "::error::report: report_build_failure.py exited non-zero -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
+            exit 0
+          fi
+          cat failure-report.md >> "$summary"
+
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "::notice::report: $(wc -c < failure-report.md) bytes written to the step summary; no PR comment on a ${{ github.event_name }} event"
+            exit 0
+          fi
+
+          marker="<!-- sarothi-build-failure -->"
+          pr="${{ github.event.pull_request.number }}"
+
+          # Read the id from the REST endpoint, not from `gh pr view --json comments`.
+          # That command's `.url` field is the *web* URL --
+          #   https://github.com/OWNER/REPO/pull/1#issuecomment-5537051638
+          # -- so stripping to the last path segment yields "1#issuecomment-5537051638"
+          # and the PATCH below 404s. It only shows up from the second run onwards:
+          # with no marker comment yet the step creates one and looks fine, and every
+          # later run then fails to update it, leaving the PR describing an old commit.
+          existing_id=$(gh api --paginate "repos/${{ github.repository }}/issues/$pr/comments" \
+            -q '.[] | select(.body | contains("'"$marker"'")) | .id' 2>> "$gh_err" | tail -1) || existing_id=""
+
+          # Cheap guard that would have caught the bug above: an id that is not a bare
+          # number cannot address a comment, so treat it as "none found" and create one
+          # rather than PATCH a path that 404s.
+          case "$existing_id" in
+            ''|*[!0-9]*) existing_id="" ;;
+          esac
+
+          # One comment per PR, updated in place, so a branch that fails ten times does
+          # not leave ten walls of text behind.
+          post() {
+            if [ -n "$existing_id" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" \
+                -f body="$1" > /dev/null 2>> "$gh_err"
+            else
+              gh pr comment "$pr" --body "$1" > /dev/null 2>> "$gh_err"
+            fi
+          }
+
+          body="$marker
+          $(cat failure-report.md)"
+
+          if post "$body"; then
+            verb=$([ -n "$existing_id" ] && echo "updated comment $existing_id" || echo "created a comment")
+            echo "Posted the failure report to PR #$pr ($verb)." >> "$summary"
+            echo "::notice::report: $verb on PR #$pr with $(wc -c < failure-report.md) bytes"
+          else
+            # The full report can still be rejected -- body too long, rate limit, a
+            # transient API error. Fall back to something small enough to always land,
+            # because leaving the previous comment in place is the worst outcome: it
+            # would keep reporting an older commit's errors as though they were current.
+            # Written as a heredoc with no backticks, so nothing here needs escaping.
+            echo "::error::report: posting $(wc -c < failure-report.md) bytes to PR #$pr failed -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
+            short=$(cat <<EOF
+          $marker
+          ## Build failure
+
+          Commit ${head_sha} failed to build.
+
+          This is a placeholder, not the real report: GitHub rejected the full text, so
+          nothing here describes an older commit by mistake. See the job log at
+          $run_url and the build-log artifact attached to that run.
+          EOF
+          )
+            : > "$gh_err"
+            if post "$short"; then
+              echo "Full report was rejected; posted a short pointer comment instead." >> "$summary"
+              echo "::warning::report: fell back to a short placeholder comment on PR #$pr"
+            else
+              echo "Could not comment on PR #$pr at all." >> "$summary"
+              echo "::error::report: even the placeholder comment failed -- $(head -c 400 "$gh_err" | tr '\n' ' ')"
+            fi
+          fi
+          rm -f "$gh_err"
+          exit 0
+
+      - name: Clear stale failure report
+        # The mirror image of the problem Report failure exists to solve. Once the build
+        # passes, that step is skipped, so the comment describing an earlier failure
+        # stays on the PR indefinitely and reads as the current state of a green branch.
+        # It is replaced rather than deleted: keeping the marker preserves the
+        # one-comment-per-PR invariant, so the next failure updates this same comment.
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          marker="<!-- sarothi-build-failure -->"
+          pr="${{ github.event.pull_request.number }}"
+          # On a pull_request event github.sha is the synthetic merge commit GitHub
+          # builds to test the PR. It is the right thing to attach annotations to and
+          # the wrong thing to print: it is not on the branch, so a reader who copies
+          # it gets nothing. The comment names the head commit instead.
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          [ -n "$head_sha" ] || head_sha="${{ github.sha }}"
+
+          id=$(gh api --paginate "repos/${{ github.repository }}/issues/$pr/comments" \
+            -q '.[] | select(.body | contains("'"$marker"'")) | .id' 2> /dev/null | tail -1) || id=""
+          # No marker comment means there is nothing stale to replace, which is the
+          # normal case and not worth an annotation.
+          case "$id" in ''|*[!0-9]*) exit 0 ;; esac
+
+          body=$(cat <<EOF
+          $marker
+          ## Build passing
+
+          Commit ${head_sha} compiles and clears lint. Its unit tests ran: ${{ steps.tests.outputs.tests_total }} executed, ${{ steps.tests.outputs.tests_failed }} failed, ${{ steps.tests.outputs.tests_skipped }} skipped.
+
+          The failure report that was here described an earlier commit. It has been
+          replaced rather than left in place, so this comment cannot disagree with the
+          state of the branch it sits on.
+          EOF
+          )
+
+          if gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" \
+               -f body="$body" > /dev/null 2>&1; then
+            echo "::notice::replaced the stale failure report on PR #$pr with a passing-build note"
+          else
+            echo "::warning::could not replace the stale failure report on PR #$pr; it still describes an older commit"
+          fi
+          exit 0
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build.log
+            failure-report.md
+            */build/test-results/**/*.xml
+            */build/reports/tests/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Unsigned release build
+        if: inputs.release == true && steps.modules.outputs.app_present == 'true'
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
+      # ------------------------------------------------------------ artifacts
+      - name: Locate outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          found=0
+
+          # APKs (only once :app exists).
+          if compgen -G "app/build/outputs/apk/**/*.apk" > /dev/null; then
+            find app/build/outputs/apk -name '*.apk' -exec cp -v {} dist/ \;
+            found=1
+          fi
+          if [ "${{ inputs.release }}" = "true" ] && compgen -G "app/build/outputs/apk/**/*.apk" > /dev/null; then
+            find app/build/outputs/apk/release -name '*.apk' -exec cp -v {} dist/ \; 2>/dev/null || true
+          fi
+
+          # Library AARs -- the real output of the build today.
+          find core/build/outputs/aar plugins/build/outputs/aar -name '*.aar' -exec cp -v {} dist/ \; 2>/dev/null || true
+
+          # Native libraries, when the native variant ran.
+          if compgen -G "core/build/intermediates/**/libsarothi_native.so" > /dev/null; then
+            mkdir -p dist/jni
+            find core/build/intermediates -name '*.so' -exec cp -v {} dist/jni/ \; 2>/dev/null || true
+            found=1
+          fi
+
+          ls -la dist/ || true
+          echo "apk_found=$found" >> "$GITHUB_OUTPUT"
+
+          # Job logs and artifact blobs live on storage that tooling frequently cannot
+          # reach, while check-run annotations are served by the ordinary REST API. So
+          # name every output here, with its size: this is the only place a reader can
+          # confirm an APK was really produced rather than trusting the summary table.
+          if [ -d dist ] && [ -n "$(ls -A dist 2>/dev/null)" ]; then
+            while IFS= read -r line; do
+              echo "::notice::build output: $line"
+            done < <(find dist -type f -printf '%p (%s bytes)\n' | sort)
+          else
+            echo "::warning::the build produced no outputs at all -- dist/ is empty"
+          fi
+
+          if [ "$found" != "1" ] && [ -f app/build.gradle.kts ]; then
+            echo "::error::app/build.gradle.kts exists and :app was assembled, but no APK was found under app/build/outputs/apk"
+          fi
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Sarothi build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Native runtime | \`${{ steps.variant.outputs.native }}\` |"
+            echo "| Gradle targets | \`${{ steps.modules.outputs.targets }}\` |"
+            # Three states, not two. "app_present" alone is not evidence an APK was
+            # produced: :app could assemble and yield nothing, and a summary that says
+            # "built" either way is the kind of claim this workflow exists to avoid.
+            if [ "${{ steps.outputs.outputs.apk_found }}" = "1" ]; then
+              echo "| APK | **built** — see the \`build output:\` annotations for names and sizes |"
+            elif [ "${{ steps.modules.outputs.app_present }}" = "true" ]; then
+              echo "| APK | **not produced** — :app was assembled but no APK was found |"
+            else
+              echo "| APK | **not produced** — \`app/build.gradle.kts\` does not exist |"
+            fi
+            echo ""
+            echo "### What was compiled"
+            echo ""
+            echo "- \`:core\` — capability layer (crypto, vault, agent, plugin engine, screen, voice, model runtime, safety, scheduling)"
+            echo "- \`:plugins\` — 78 plugins across 9 categories"
+            if [ "${{ steps.variant.outputs.native }}" = "true" ]; then
+              echo "- JNI bridge against llama.cpp \`v0.3.0\` and whisper.cpp \`b4938\`"
+            else
+              echo ""
+              echo "_Kotlin-only build: \`third_party/\` was not fetched, so \`libsarothi_native.so\` was not"
+              echo "compiled. At runtime \`NativeBridge\` reports the model runtimes unavailable rather than"
+              echo "fabricating output. Re-run with \`native=true\` to build the JNI bridge._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sarothi-${{ steps.variant.outputs.native == 'true' && 'native' || 'kotlin' }}
+          path: |
+            dist/
+            core/build/reports/**
+            plugins/build/reports/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ----------------------------------------------------------------------- lint
+  # A separate job rather than a `continue-on-error` step inside `build`: an
+  # ignored step disappears into a green check, whereas a job shows up in the PR
+  # as its own yellow/neutral result. Lint findings on this codebase are worth
+  # seeing but should not block a build that has never been compiled before.
+  lint:
+    name: Android lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+    # Blocking. This was continue-on-error while the four lint errors were being worked
+    # through, on the understanding that it came off once the count reached zero -- it
+    # has. A lint job that fails without failing the run is how a NewApi call that
+    # throws NoSuchMethodError on older Android stays merged, and one of the four that
+    # were fixed here was exactly that.
+    #
+    # The 67 remaining issues are warnings and do not fail the job. If that ever changes,
+    # the Report lint step names every failing check id with file and line.
+    continue-on-error: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          fi
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" "platform-tools" "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "${{ env.GRADLE_VERSION }}"
+
+      - name: Lint library modules
+        # Captured for the same reason the build log is: when lint fails without
+        # producing its XML report, the Gradle output is the only evidence left.
+        run: |
+          set -uo pipefail
+          gradle --no-daemon --console=plain :core:lintDebug :plugins:lintDebug 2>&1 | tee lint.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report lint
+        # Lint writes HTML and XML reports that are uploaded as artifacts, and
+        # artifacts are served from blob storage that tooling frequently cannot reach.
+        # Re-emitting every failing issue as a workflow-command annotation puts them on
+        # the ordinary REST API instead, with file and line attached.
+        if: always()
+        run: |
+          set -uo pipefail
+          # stdout carries the ::error:: commands, which the runner parses into
+          # annotations. The digest therefore goes to a file first: redirecting the
+          # script straight into the step summary would swallow every annotation.
+          python3 scripts/report_lint.py -o lint-digest.md
+          cat lint-digest.md >> "$GITHUB_STEP_SUMMARY"
+
+          if ! ls core/build/reports/lint-results-*.xml \
+                  plugins/build/reports/lint-results-*.xml > /dev/null 2>&1; then
+            {
+              echo '### Lint produced no XML report'
+              echo
+              echo 'So the failure is in lint itself, not in the code it checked. The'
+              echo 'tail of the Gradle output follows.'
+              echo
+              echo '```'
+              tail -n 80 lint.log 2> /dev/null || echo '(no lint.log was captured)'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-reports
+          path: |
+            lint.log
+            lint-digest.md
+            core/build/reports/lint-results-*.html
+            core/build/reports/lint-results-*.xml
+            plugins/build/reports/lint-results-*.html
+            plugins/build/reports/lint-results-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ------------------------------------------------------------------ device tests
+  # Every other job here runs on the JVM or inside the SDK's own tooling. This one is the
+  # only place Sarothi is actually executed: an emulator boots, the test APKs install, and
+  # the code that depends on a real platform runs for real -- the Android Keystore behind
+  # SecretStore, Argon2id at its production parameters, the PackageManager's view of the
+  # merged manifest, and the Compose UI on a cold start with no vault and no models.
+  #
+  # Blocking, for the same reason lint is: a device suite that is allowed to fail is a
+  # device suite nobody reads. The failures it catches are the ones nothing else here can
+  # see. A service that is not declared never binds, an accessibility deep link naming the
+  # wrong class opens an empty settings screen, and a preference file that is not actually
+  # encrypted still passes every JVM test in the repository.
+  instrumented:
+    name: Instrumentation tests (emulator)
+    runs-on: ubuntu-latest
+    # Boot is the long pole; the suites themselves take a few minutes. The budget exists so
+    # a hung emulator cannot hold a runner for the rest of the day.
+    timeout-minutes: 75
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          fi
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" "platform-tools" "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}" \
+            "emulator" "system-images;android-${EMULATOR_API};google_apis;x86_64"
+
+          # The `find` fallback above is not defensive padding: this runner image ships a
+          # versioned cmdline-tools directory and no `latest` symlink, and the emulator
+          # action resolves avdmanager and sdkmanager through cmdline-tools/latest. Without
+          # the link it fails in seconds, before an AVD exists, and leaves no Gradle output
+          # behind -- which reads exactly like "the emulator would not boot".
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ ! -e "$root/cmdline-tools/latest" ]; then
+            newest="$(find "$root/cmdline-tools" -mindepth 1 -maxdepth 1 -type d ! -name latest \
+              | sort -V | tail -1)"
+            if [ -n "$newest" ]; then
+              ln -s "$newest" "$root/cmdline-tools/latest"
+              echo "linked cmdline-tools/latest -> $newest"
+            else
+              echo "::warning::no cmdline-tools directory to link as latest under $root"
+            fi
+          fi
+          for probe in avdmanager sdkmanager; do
+            [ -x "$root/cmdline-tools/latest/bin/$probe" ] \
+              || echo "::warning::$probe is not executable through cmdline-tools/latest"
+          done
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "${{ env.GRADLE_VERSION }}"
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Enable KVM
+        # GitHub's Linux runners have /dev/kvm but leave it owned by root, so the emulator
+        # falls back to software acceleration and takes long enough to boot that the job can
+        # time out before a single test runs. This is what makes the device usable at all.
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Record the device-test prerequisites in the annotations
+        # Job logs live on blob storage that tooling often cannot reach, and this job's most
+        # confusing failure mode -- dying in under a minute, before Gradle runs, with no
+        # instrumented.log to read -- is indistinguishable from a boot timeout unless the
+        # state that decides it is written down somewhere readable. Annotations are.
+        if: always()
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          echo "::notice title=android sdk root::ANDROID_HOME=${ANDROID_HOME:-unset} ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset} resolved=${root:-unset}"
+          echo "::notice title=cmdline-tools layout::$(ls -1 "$root/cmdline-tools" 2>/dev/null | tr '\n' ' ')"
+          for tool in sdkmanager avdmanager emulator adb; do
+            found="$(command -v "$tool" 2>/dev/null || true)"
+            if [ -z "$found" ] && [ -n "$root" ]; then
+              found="$(find "$root" -name "$tool" -type f 2>/dev/null | head -1)"
+            fi
+            echo "::notice title=android tool ${tool}::${found:-not found}"
+          done
+          # Two levels deep: `system-images/android-34` existing says nothing about whether
+          # the google_apis x86_64 variant this job asks avdmanager for is actually there,
+          # and a missing variant is an AVD that cannot be created.
+          echo "::notice title=installed system images::$(ls -1 "$root/system-images" 2>/dev/null | tr '\n' ' ') | $(ls -1 "$root/system-images/android-${EMULATOR_API}" 2>/dev/null | tr '\n' ' ') | $(ls -1 "$root/system-images/android-${EMULATOR_API}/google_apis" 2>/dev/null | tr '\n' ' ')"
+          echo "::notice title=kvm::$(ls -l /dev/kvm 2>&1 | head -1)"
+
+      - name: Detect which modules have device tests
+        id: targets
+        # Derived from the source tree rather than listed by hand, so a module that grows an
+        # androidTest set joins the run without anyone having to remember this file.
+        run: |
+          set -euo pipefail
+          targets=""
+          for module in core plugins app; do
+            if [ -d "$module/src/androidTest" ]; then
+              targets="$targets :$module:connectedDebugAndroidTest"
+            fi
+          done
+          if [ -z "$targets" ]; then
+            echo "::error::no module has src/androidTest sources, so the device suite is empty"
+            exit 1
+          fi
+          targets="$(echo "$targets" | xargs)"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Instrumented targets: $targets"
+
+      - name: Create the AVD
+        # Created here rather than left to an action, for one reason: when an action fails,
+        # its output is on blob storage tooling cannot reach, and "the AVD was never created",
+        # "it was created with 96 MB of RAM" and "it booted and the suite failed" then look
+        # identical -- the same exit code, no instrumented.log, three unrelated fixes. Every
+        # step from here on writes what it decided into an annotation.
+        #
+        # avdmanager's exit status is not trusted on its own: it has been observed here to
+        # exit 0 and leave no AVD behind, which then fails two steps later as a missing
+        # config.ini with nothing to say about the cause. The test that matters is whether
+        # the file exists, and when it does not, avdmanager's own output becomes annotations.
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          export ANDROID_SDK_ROOT="$root"
+          image="system-images;android-${EMULATOR_API};google_apis;x86_64"
+          avdmanager="$root/cmdline-tools/latest/bin/avdmanager"
+          ini="${ANDROID_AVD_HOME:-$HOME/.android/avd}/sarothi.avd/config.ini"
+          out=avdmanager.log
+
+          echo "::notice title=avd home::ANDROID_AVD_HOME=${ANDROID_AVD_HOME:-unset}, using $(dirname "$(dirname "$ini")")"
+
+          created=0
+          for profile in pixel_5 pixel ""; do
+            args=(create avd --name sarothi --package "$image" --force)
+            if [ -n "$profile" ]; then args+=(--device "$profile"); fi
+            if echo no | "$avdmanager" "${args[@]}" > "$out" 2>&1 && [ -f "$ini" ]; then
+              created=1
+              echo "::notice title=avd created::profile=${profile:-none}, $ini exists"
+              break
+            fi
+            echo "::warning title=avdmanager attempt::profile=${profile:-none} did not produce $ini"
+          done
+
+          if [ "$created" -ne 1 ]; then
+            # The only witness to why. Escaped because % and carriage returns terminate an
+            # annotation command early, and tool output contains both.
+            tail -n 20 "$out" \
+              | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/^/::error title=avdmanager output::/'
+            # avdmanager asks "Do you wish to create a custom hardware profile? [no]", reads
+            # the answer off a pipe, and has been seen here to stop there -- exit status 0,
+            # no AVD, no error text. That is indistinguishable from its successful output.
+            # An AVD is two files the emulator reads, so write them instead of depending on
+            # a prompt being answered the way one interactive terminal would answer it.
+            echo "::warning title=avdmanager::no AVD was produced by any profile; writing the AVD definition directly"
+            avd_dir="$(dirname "$ini")"
+            avd_home="$(dirname "$avd_dir")"
+            mkdir -p "$avd_dir"
+            printf 'avd.ini.encoding=UTF-8\npath=%s\npath.rel=avd/sarothi.avd\ntarget=android-%s\n' \
+              "$avd_dir" "$EMULATOR_API" > "$avd_home/sarothi.ini"
+            {
+              printf 'AvdId=sarothi\n'
+              printf 'PlayStore.enabled=false\n'
+              printf 'abi.type=x86_64\n'
+              printf 'avd.ini.displayname=sarothi\n'
+              printf 'avd.ini.encoding=UTF-8\n'
+              printf 'disk.dataPartition.size=6G\n'
+              printf 'hw.accelerometer=yes\n'
+              printf 'hw.audioInput=no\n'
+              printf 'hw.battery=yes\n'
+              printf 'hw.camera.back=none\n'
+              printf 'hw.camera.front=none\n'
+              printf 'hw.cpu.arch=x86_64\n'
+              printf 'hw.cpu.ncore=4\n'
+              printf 'hw.dPad=no\n'
+              printf 'hw.gps=yes\n'
+              printf 'hw.gpu.enabled=yes\n'
+              printf 'hw.gpu.mode=auto\n'
+              printf 'hw.initialOrientation=Portrait\n'
+              printf 'hw.keyboard=yes\n'
+              printf 'hw.lcd.density=440\n'
+              printf 'hw.lcd.height=2340\n'
+              printf 'hw.lcd.width=1080\n'
+              printf 'hw.mainKeys=no\n'
+              printf 'hw.ramSize=3072\n'
+              printf 'hw.sdCard=no\n'
+              printf 'hw.sensors.orientation=yes\n'
+              printf 'hw.sensors.proximity=yes\n'
+              printf 'hw.trackBall=no\n'
+              printf 'image.sysdir.1=system-images/android-%s/google_apis/x86_64/\n' "$EMULATOR_API"
+              printf 'runtime.network.latency=none\n'
+              printf 'runtime.network.speed=full\n'
+              printf 'showDeviceFrame=no\n'
+              printf 'skin.dynamic=yes\n'
+              printf 'tag.display=Google APIs\n'
+              printf 'tag.id=google_apis\n'
+              printf 'target=android-%s\n' "$EMULATOR_API"
+              printf 'vm.heapSize=512\n'
+            } > "$ini"
+            [ -f "$ini" ] || { echo "::error title=the AVD could not be written::$ini is still missing"; exit 1; }
+            created=1
+          fi
+
+          # The emulator's own view is the check that matters: an AVD on disk that the
+          # emulator binary cannot see is the failure mode that looks like a boot timeout.
+          visible="$("$root/emulator/emulator" -list-avds 2>&1 | tr '\n' ' ')"
+          case " $visible " in
+            *" sarothi "*) echo "::notice title=emulator sees the AVD::$visible" ;;
+            *)
+              echo "::error title=the emulator cannot see the AVD::-list-avds says '${visible:-nothing}'; $ini exists but is not being found, which points at ANDROID_AVD_HOME (${ANDROID_AVD_HOME:-unset}) or a config.ini the emulator rejects"
+              exit 1
+              ;;
+          esac
+
+          # State the memory once. avdmanager writes a profile default and anything appended
+          # afterwards becomes a second hw.ramSize line in the same file, which is how an AVD
+          # ends up asking for 3 GB and being given 96 MB.
+          grep -v -E '^(hw\.ramSize|hw\.heapSize|disk\.dataPartition\.size)=' "$ini" > "$ini.new"
+          {
+            cat "$ini.new"
+            # Sarothi is built for a 3 GB phone. Less than that would make the memory-tier
+            # assertions measure the runner instead of the code.
+            echo "hw.ramSize=3072"
+            echo "hw.heapSize=512"
+            echo "disk.dataPartition.size=6G"
+          } > "$ini"
+          rm -f "$ini.new"
+          decided="$(grep -E '^(hw\.ramSize|hw\.heapSize|disk\.dataPartition\.size|image\.sysdir\.1)=' "$ini" | tr '\n' ' ')"
+          echo "::notice title=avd config::$decided"
+
+      - name: Boot the emulator
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          adb="$root/platform-tools/adb"
+
+          "$root/emulator/emulator" -avd sarothi \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -gpu swiftshader_indirect -memory 3072 -partition-size 6144 \
+            -camera-back none -camera-front none \
+            > emulator.log 2>&1 &
+          echo "$!" > emulator.pid
+          echo "emulator started as process $(cat emulator.pid), logging to emulator.log"
+
+          if ! timeout 300 "$adb" wait-for-device; then
+            echo "::error title=adb never saw the emulator::it did not come online within 300s of being started"
+            python3 scripts/report_instrumented_failure.py --emulator-log emulator.log || true
+            exit 1
+          fi
+
+          # Cold boot every time, so "fresh install: no vault, no models, no permissions" is
+          # a fact about the device rather than something inherited from a previous run.
+          deadline=$(( $(date +%s) + 900 ))
+          booted=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+              booted=1
+              break
+            fi
+            if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then
+              echo "::error title=the emulator exited during boot::its own output is annotated below"
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "$booted" ]; then
+            # The emulator's own output is the only account of what went wrong, and it is
+            # about to be discarded with the runner.
+            python3 scripts/report_instrumented_failure.py --emulator-log emulator.log || true
+            exit 1
+          fi
+
+          echo "::notice title=emulator booted::android $("$adb" shell getprop ro.build.version.release | tr -d '\r') / api $("$adb" shell getprop ro.build.version.sdk | tr -d '\r') / $("$adb" shell getprop ro.product.cpu.abi | tr -d '\r') / $("$adb" shell getprop ro.product.model | tr -d '\r')"
+          # Animations off, so a Compose test is not asserting against a transition that is
+          # still running.
+          for scale in window_animation_scale transition_animation_scale animator_duration_scale; do
+            "$adb" shell settings put global "$scale" 0 || true
+          done
+
+      - name: Run the suites on the device
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          adb="$root/platform-tools/adb"
+          gradle --no-daemon --stacktrace --console=plain ${{ steps.targets.outputs.targets }} 2>&1 | tee instrumented.log
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then
+            # The device is alive right now and will not be after the next step. A module
+            # whose instrumentation process crashes leaves a result file with no testcase in
+            # it -- not even a count -- and the only witness to why is logcat, which is
+            # discarded with the runner. app: 0 testcases against a failed task is exactly
+            # that shape, and it is not distinguishable from "no tests matched" afterwards.
+            "$adb" logcat -d -b crash -b main -b system > logcat.txt 2>&1 || true
+            "$adb" devices -l > adb-devices.txt 2>&1 || true
+            echo "::notice title=device state captured::logcat $(wc -l < logcat.txt 2>/dev/null || echo 0) line(s)"
+          fi
+          exit "$status"
+
+      - name: Stop the emulator
+        if: always()
+        run: |
+          set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -f emulator.pid ]; then
+            "$root/platform-tools/adb" emu kill > /dev/null 2>&1 || true
+            kill "$(cat emulator.pid)" > /dev/null 2>&1 || true
+          fi
+
+      - name: Count what ran on the device
+        # connectedAndroidTest exits zero when there was no device to talk to and zero when
+        # nothing matched. This is the guard the JVM suites already have: the claim "the
+        # device tests pass" has to have a count behind it. That is more true after a
+        # failure than before one, so this runs either way.
+        if: always()
+        run: |
+          set -uo pipefail
+          counts=$(python3 scripts/count_unit_tests.py --require-nonzero --connected)
+          status=$?
+          read -r total failed skipped <<< "$counts"
+          total="${total:-}"; failed="${failed:-}"; skipped="${skipped:-}"
+          if [ -z "$total" ] || [ -z "$failed" ] || [ -z "$skipped" ]; then
+            echo "::error::could not count the instrumentation results (counter said: $counts)"
+            exit 1
+          fi
+          {
+            echo "### Instrumentation tests"
+            echo
+            echo "**$total** executed on the emulator, **$failed** failed, **$skipped** skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed instrumentation test(s) failed"
+            exit 1
+          fi
+          echo "::notice::$total instrumentation tests ran on the emulator, $failed failed, $skipped skipped"
+
+      - name: Report device test failures
+        # Artifacts are served from blob storage that tooling often cannot reach, and a
+        # device failure is the one kind that cannot be reconstructed by reading a log --
+        # it happened on an emulator that no longer exists. The failing test names and
+        # messages go into the check annotations instead.
+        #
+        # Two reporters, because "the job failed" has three unrelated causes here: the
+        # androidTest sources did not compile (which the build job cannot catch, since it
+        # never compiles this source set), the emulator never became usable (so no test ran,
+        # which is not a pass), or tests ran and failed. The first script says which of the
+        # three it was and annotates compile errors with file and line; the second names the
+        # failing tests from the XML.
+        if: failure()
+        run: |
+          set -uo pipefail
+          # Whether the device was still there when Gradle gave up separates "the tests
+          # failed" from "the device went away mid-suite": both read the same in the exit
+          # status, and only one of them is a bug in Sarothi. adb is not on PATH here, which
+          # is why this used to print "command not found" instead of an answer.
+          if [ -f adb-devices.txt ]; then
+            echo "::notice title=adb devices at failure::$(tr '\n' ' ' < adb-devices.txt)"
+          fi
+          if [ -f logcat.txt ]; then
+            # The crash block first: FATAL EXCEPTION and the stack under it. Annotations are
+            # the only channel that survives the runner, so this is capped rather than dumped.
+            crash=$(awk '/FATAL EXCEPTION|beginning of crash/{found=1} found{print; n++} n>=28{exit}' logcat.txt)
+            if [ -n "$crash" ]; then
+              printf '%s\n' "$crash" | while IFS= read -r entry; do
+                [ -n "$entry" ] || continue
+                printf '::error title=device crashed::%s\n' "$(printf '%s' "$entry" | tr -d '\r' | cut -c1-380)"
+              done
+            else
+              grep -E "AndroidRuntime|Process crashed|TestRunner|Instrumentation|ANR in|com\.ngi\.sarothi" logcat.txt \
+                | tail -n 25 | while IFS= read -r entry; do
+                    [ -n "$entry" ] || continue
+                    printf '::warning title=device log::%s\n' "$(printf '%s' "$entry" | tr -d '\r' | cut -c1-380)"
+                  done
+            fi
+          fi
+          python3 scripts/report_instrumented_failure.py \
+            --log instrumented.log \
+            --emulator-log emulator.log \
+            -o instrumented-failure.md || true
+          if [ -f instrumented-failure.md ]; then
+            cat instrumented-failure.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python3 scripts/report_instrumented_failures.py -o instrumented-digest.md || true
+          # Whether an AVD exists at all separates two failures that look identical from the
+          # exit code: the device was never created, and the device was created but never
+          # finished booting. The first is an SDK path problem, the second a KVM or image
+          # problem, and they are not fixed the same way.
+          root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          avds="$("$root/emulator/emulator" -list-avds 2>&1 | tr '\n' ' ')"
+          echo "::error title=emulator state::AVDs known to the emulator binary: ${avds:-none}; $HOME/.android/avd holds: $(ls -1 "$HOME/.android/avd" 2>/dev/null | tr '\n' ' ' || echo nothing)"
+          if [ -f "$HOME/.android/avd/test.avd/config.ini" ]; then
+            echo "::error title=avd config::$(grep -E 'hw.ramSize|disk.dataPartition.size|image.sysdir' "$HOME/.android/avd/test.avd/config.ini" | tr '\n' ' ')"
+          fi
+          if [ -f instrumented-digest.md ]; then
+            cat instrumented-digest.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f instrumented.log ]; then
+            {
+              echo
+              echo '```'
+              tail -n 60 instrumented.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instrumented-results
+          path: |
+            instrumented.log
+            instrumented-digest.md
+            instrumented-failure.md
+            emulator.log
+            logcat.txt
+            adb-devices.txt
+            */build/outputs/androidTest-results/**
+            */build/reports/androidTests/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ------------------------------------------------------- regenerate the wrapper
+  # The wrapper jar is binary and was never committed, so `./gradlew` does not work
+  # on a fresh clone. This job produces it as an artifact; committing those four
+  # files lets CI and local builds use the wrapper and drops this job.
+  gradle-wrapper:
+    name: Generate Gradle wrapper
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "${{ env.GRADLE_VERSION }}"
+
+      - name: Generate wrapper
+        run: |
+          set -euo pipefail
+          gradle --no-daemon wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin
+          ./gradlew --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gradle-wrapper
+          path: |
+            gradlew
+            gradlew.bat
+            gradle/wrapper/gradle-wrapper.jar
+            gradle/wrapper/gradle-wrapper.properties
+          retention-days: 30

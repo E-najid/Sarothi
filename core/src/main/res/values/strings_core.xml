@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sarothi_accessibility_summary">Lets Sarothi read the screen and act on it for you.</string>
+    <string name="sarothi_accessibility_description">Sarothi uses this permission to read what is on
+        your screen so it can carry out tasks you ask for, and to perform taps, typing and scrolling on
+        your behalf. Everything is processed on your device; screen contents are never uploaded. Sarothi
+        does not intercept your keystrokes, and it asks before sending messages, spending money or
+        deleting anything.</string>
+    <string name="sarothi_capture_channel">Screen capture</string>
+    <string name="sarothi_capture_channel_desc">Shown while Sarothi is allowed to read the screen as an image.</string>
+    <string name="sarothi_task_channel">Tasks</string>
+    <string name="sarothi_task_channel_desc">Progress and results for tasks Sarothi is running.</string>
+    <string name="sarothi_download_channel">Model downloads</string>
+    <string name="sarothi_download_channel_desc">Progress for on-device model downloads.</string>
+    <string name="sarothi_schedule_channel">Scheduled tasks</string>
+    <string name="sarothi_schedule_channel_desc">Reminders and results from scheduled Sarothi tasks.</string>
+</resources>

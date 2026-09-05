@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A platform theme, not an AppCompat or Material-Components one: every screen is
+      Compose, so the XML theme only has to get out of the way of the Activity window.
+      Pulling in androidx.appcompat for a NoActionBar parent would add a dependency the
+      UI never uses, on an app that has to fit in 3 GB of RAM.
+    -->
+    <style name="Theme.Sarothi" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app module's manifest. Every permission and every service, receiver and
+  accessibility host lives in :core's manifest and is merged in from there; what
+  belongs here is only the entry point - the Application that builds the graph and
+  the single Activity that hosts the Compose UI.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:name=".SarothiApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Sarothi">
+
+        <!--
+          dataExtractionRules / fullBackupContent are deliberately absent: the vault
+          lives on shared storage the user chose and is encrypted with a key derived
+          from their passphrase. Backing any of it up to a Google account would put a
+          copy of the user's memories somewhere they did not ask for, and allowBackup
+          is off so nothing else goes either.
+        -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
