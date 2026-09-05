@@ -83,15 +83,30 @@ class SecretStore(private val context: Context) : LockoutStore {
         getString(key)?.takeIf { it.isNotEmpty() }?.let(Hex::decode)
 
     // ------------------------------------------------------------------ numerics
-
+    //
+    // These two are the LockoutStore seam, and in the whole of Sarothi's own code the only
+    // caller is LockoutTracker, so they are written with commit() rather than apply().
+    //
+    // apply() queues the disk write and returns immediately, which is right for a preference
+    // and wrong for a brute-force counter: kill the process in the window between a failed
+    // unlock and the flush and the failure was never recorded, so the backoff restarts from
+    // zero and the "cannot be reset by force-stopping Sarothi" guarantee that LockoutTracker
+    // documents is true only most of the time. An attacker who can put a phone down and pick
+    // it up again is exactly an attacker who can wait for that window.
+    //
+    // commit() reports whether the write reached the disk. A false here is not acted on:
+    // throwing would turn a full disk into a locked vault, and the counter is still in memory
+    // for this process, which is the protection level apply() had anyway. The two values are
+    // small and written at most once per failed unlock, so the synchronous write costs
+    // nothing that a user would notice.
     override fun putLong(key: String, value: Long) {
-        prefs.edit().putLong(key, value).apply()
+        prefs.edit().putLong(key, value).commit()
     }
 
     override fun getLong(key: String, fallback: Long): Long = prefs.getLong(key, fallback)
 
     override fun putInt(key: String, value: Int) {
-        prefs.edit().putInt(key, value).apply()
+        prefs.edit().putInt(key, value).commit()
     }
 
     override fun getInt(key: String, fallback: Int): Int = prefs.getInt(key, fallback)

@@ -249,24 +249,45 @@ def result_summary() -> str | None:
     """What the instrumentation XML says, independent of Gradle's exit status.
 
     connectedAndroidTest exits zero when there was no device and zero when nothing matched,
-    so the count has to come from the files. This reads them directly rather than trusting
-    the counting step, which does not run once an earlier step has failed.
+    so the count has to come from the files. It is reported per module because a total cannot
+    distinguish "67 ran and 1 failed" from "42 ran in one module and the other never started",
+    and the second is a device problem wearing the first one's clothes.
     """
-    files = [path for directory in RESULT_DIRS for path in Path(directory).rglob("*.xml")]
-    if not files:
-        return None
+    per_module = []
     tests = failures = skipped = 0
-    for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for match in re.finditer(r'<testsuite\b[^>]*>', text):
-            tag = match.group(0)
-            tests += int(re.search(r'\btests="(\d+)"', tag).group(1)) if re.search(r'\btests="(\d+)"', tag) else 0
-            failures += int(re.search(r'\bfailures="(\d+)"', tag).group(1)) if re.search(r'\bfailures="(\d+)"', tag) else 0
-            skipped += int(re.search(r'\bskipped="(\d+)"', tag).group(1)) if re.search(r'\bskipped="(\d+)"', tag) else 0
-    return (
-        f"{len(files)} instrumentation result file(s) on the runner: {tests} testcase(s) "
-        f"recorded, {failures} failure(s), {skipped} skipped"
-    )
+    for directory in RESULT_DIRS:
+        root = Path(directory)
+        if not root.is_dir():
+            continue
+        module = root.parts[0]
+        files = sorted(root.rglob("*.xml"))
+        module_tests = module_failures = module_skipped = 0
+        for path in files:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for tag in re.finditer(r"<testsuite\b[^>]*>", text):
+                attributes = tag.group(0)
+
+                def number(name: str) -> int:
+                    found = re.search(r'\b%s="(\d+)"' % name, attributes)
+                    return int(found.group(1)) if found else 0
+
+                module_tests += number("tests")
+                module_failures += number("failures") + number("errors")
+                module_skipped += number("skipped")
+        per_module.append(
+            f"{module}: {module_tests} testcase(s), {module_failures} failure(s), "
+            f"{module_skipped} skipped, {len(files)} file(s)"
+        )
+        tests += module_tests
+        failures += module_failures
+        skipped += module_skipped
+
+    if not per_module:
+        return None
+    total = f"{len(per_module)} module(s) wrote instrumentation results: " + "; ".join(per_module)
+    if len(per_module) > 1:
+        total += f". Total {tests} testcase(s), {failures} failure(s), {skipped} skipped"
+    return total
 
 
 def annotate(title: str, message: str, path: str | None = None, line: int | None = None,

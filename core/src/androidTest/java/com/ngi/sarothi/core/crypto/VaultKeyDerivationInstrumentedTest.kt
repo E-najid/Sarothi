@@ -43,9 +43,23 @@ class VaultKeyDerivationInstrumentedTest {
     @Before
     fun startFromAnUnlockedCleanSlate() {
         context = InstrumentationRegistry.getInstrumentation().targetContext
-        // Deleting the store resets the lockout counters, so a failure recorded by one
-        // test cannot lock out the next one.
         context.deleteSharedPreferences(SecretStore.FILE_NAME)
+        // Deleting the file is not the same as clearing the counters, and this cost a real
+        // run to find out. Every test in an instrumentation run shares one process, and
+        // SharedPreferences loads once per process: the instance the next test reads is the
+        // one the previous test wrote to, file or no file. One test here opens a lockout
+        // window on purpose -- that is the whole point of it -- and the next test to call
+        // unlock() then died on IncorrectPasswordException from requireNotLocked() before it
+        // had typed anything. recordSuccess() writes the zeros through that same live
+        // instance, so the reset is real rather than merely intended.
+        val lockout = manager().lockout
+        lockout.recordSuccess()
+        assertEquals(
+            "the lockout counters survived a reset, so a wrong passphrase recorded by one " +
+                "test would lock out the next one",
+            LockoutTracker.State.UNLOCKED,
+            lockout.state(),
+        )
     }
 
     @After
