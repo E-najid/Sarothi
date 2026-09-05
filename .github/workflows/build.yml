@@ -922,8 +922,21 @@ jobs:
       - name: Run the suites on the device
         run: |
           set -uo pipefail
+          root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          adb="$root/platform-tools/adb"
           gradle --no-daemon --stacktrace --console=plain ${{ steps.targets.outputs.targets }} 2>&1 | tee instrumented.log
-          exit "${PIPESTATUS[0]}"
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -ne 0 ]; then
+            # The device is alive right now and will not be after the next step. A module
+            # whose instrumentation process crashes leaves a result file with no testcase in
+            # it -- not even a count -- and the only witness to why is logcat, which is
+            # discarded with the runner. app: 0 testcases against a failed task is exactly
+            # that shape, and it is not distinguishable from "no tests matched" afterwards.
+            "$adb" logcat -d -b crash -b main -b system > logcat.txt 2>&1 || true
+            "$adb" devices -l > adb-devices.txt 2>&1 || true
+            echo "::notice title=device state captured::logcat $(wc -l < logcat.txt 2>/dev/null || echo 0) line(s)"
+          fi
+          exit "$status"
 
       - name: Stop the emulator
         if: always()
@@ -982,8 +995,28 @@ jobs:
           set -uo pipefail
           # Whether the device was still there when Gradle gave up separates "the tests
           # failed" from "the device went away mid-suite": both read the same in the exit
-          # status, and only one of them is a bug in Sarothi.
-          echo "::notice title=adb devices at failure::$(adb devices -l 2>&1 | tr '\n' ' ')"
+          # status, and only one of them is a bug in Sarothi. adb is not on PATH here, which
+          # is why this used to print "command not found" instead of an answer.
+          if [ -f adb-devices.txt ]; then
+            echo "::notice title=adb devices at failure::$(tr '\n' ' ' < adb-devices.txt)"
+          fi
+          if [ -f logcat.txt ]; then
+            # The crash block first: FATAL EXCEPTION and the stack under it. Annotations are
+            # the only channel that survives the runner, so this is capped rather than dumped.
+            crash=$(awk '/FATAL EXCEPTION|beginning of crash/{found=1} found{print; n++} n>=28{exit}' logcat.txt)
+            if [ -n "$crash" ]; then
+              printf '%s\n' "$crash" | while IFS= read -r entry; do
+                [ -n "$entry" ] || continue
+                printf '::error title=device crashed::%s\n' "$(printf '%s' "$entry" | tr -d '\r' | cut -c1-380)"
+              done
+            else
+              grep -E "AndroidRuntime|Process crashed|TestRunner|Instrumentation|ANR in|com\.ngi\.sarothi" logcat.txt \
+                | tail -n 25 | while IFS= read -r entry; do
+                    [ -n "$entry" ] || continue
+                    printf '::warning title=device log::%s\n' "$(printf '%s' "$entry" | tr -d '\r' | cut -c1-380)"
+                  done
+            fi
+          fi
           python3 scripts/report_instrumented_failure.py \
             --log instrumented.log \
             --emulator-log emulator.log \
@@ -1023,6 +1056,8 @@ jobs:
             instrumented-digest.md
             instrumented-failure.md
             emulator.log
+            logcat.txt
+            adb-devices.txt
             */build/outputs/androidTest-results/**
             */build/reports/androidTests/**
           if-no-files-found: ignore

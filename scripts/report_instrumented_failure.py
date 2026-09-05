@@ -245,7 +245,7 @@ def classify(lines: list[str]) -> dict:
     }
 
 
-def result_summary() -> str | None:
+def result_summary() -> tuple[str, list[str]] | None:
     """What the instrumentation XML says, independent of Gradle's exit status.
 
     connectedAndroidTest exits zero when there was no device and zero when nothing matched,
@@ -254,6 +254,7 @@ def result_summary() -> str | None:
     and the second is a device problem wearing the first one's clothes.
     """
     per_module = []
+    empty_modules: list[str] = []
     tests = failures = skipped = 0
     for directory in RESULT_DIRS:
         root = Path(directory)
@@ -278,6 +279,8 @@ def result_summary() -> str | None:
             f"{module}: {module_tests} testcase(s), {module_failures} failure(s), "
             f"{module_skipped} skipped, {len(files)} file(s)"
         )
+        if module_tests == 0:
+            empty_modules.append(module)
         tests += module_tests
         failures += module_failures
         skipped += module_skipped
@@ -287,7 +290,7 @@ def result_summary() -> str | None:
     total = f"{len(per_module)} module(s) wrote instrumentation results: " + "; ".join(per_module)
     if len(per_module) > 1:
         total += f". Total {tests} testcase(s), {failures} failure(s), {skipped} skipped"
-    return total
+    return total, empty_modules
 
 
 def annotate(title: str, message: str, path: str | None = None, line: int | None = None,
@@ -346,9 +349,25 @@ def main(argv: list[str]) -> int:
     digest += ["### Instrumentation tests", ""]
 
     results = result_summary()
-    if results:
-        annotate("instrumentation results on the runner", results, level="notice")
-        digest += [results, ""]
+    summary = results[0] if results else None
+    empty_modules = results[1] if results else []
+    if summary:
+        annotate("instrumentation results on the runner", summary, level="notice")
+        digest += [summary, ""]
+    if empty_modules:
+        # A result file with no testcase in it is not a passing module and not a failing
+        # test: it is a module whose instrumentation process died before the first test
+        # could be recorded, which is what an app that crashes on launch looks like from
+        # here. Saying "no failure was reported" about it would be the wrong sentence.
+        message = (
+            f"{', '.join(empty_modules)} wrote an instrumentation result file with no "
+            "testcase in it, so no test in that module was recorded as passing or failing. "
+            "That happens when the instrumentation process itself dies -- an Application "
+            "that throws in onCreate takes every test in the module with it -- and the "
+            "reason is in the device log annotated below, not in the JUnit XML."
+        )
+        annotate("a module recorded no test at all", message)
+        digest += ["", f"**{message}**"]
 
     if errors:
         digest += [
@@ -386,7 +405,7 @@ def main(argv: list[str]) -> int:
             digest.append(f"| `{failure['name']}` | {reason[:200]} |")
         if len(test_failures) > args.max:
             digest.append(f"| … | {len(test_failures) - args.max} more in the job log |")
-    elif found["hard_device_failure"] or not results:
+    elif found["hard_device_failure"] or not summary:
         # No compile error and no test outcome: the device is the suspect, but only say so
         # when the evidence is a hard marker or there is genuinely no result to contradict it.
         first = emulator[0][:200] if emulator else "no emulator line in the Gradle output"
@@ -402,13 +421,13 @@ def main(argv: list[str]) -> int:
             *(line[:200] for line in emulator[:12]),
             "```",
         ]
-    else:
+    elif not empty_modules:
         annotate(
             "the suites reported no failure, yet the job failed",
-            f"{results}; failing tasks: {', '.join(tasks) or 'none named'}",
+            f"{summary}; failing tasks: {', '.join(tasks) or 'none named'}",
         )
         digest += [
-            f"The instrumentation results record no failure ({results}), so the job failed "
+            f"The instrumentation results record no failure ({summary}), so the job failed "
             "outside the tests: a Gradle task, the counting step, or the teardown.",
         ]
 
