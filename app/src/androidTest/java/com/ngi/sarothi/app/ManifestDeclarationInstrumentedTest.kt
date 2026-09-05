@@ -79,7 +79,7 @@ class ManifestDeclarationInstrumentedTest {
         val listed = packageManager.queryIntentServices(
             Intent(AccessibilityService.SERVICE_INTERFACE),
             PackageManager.GET_META_DATA,
-        ).filter { it.packageName == context.packageName }
+        ).filter { it.serviceInfo?.packageName == context.packageName }
         assertTrue(
             "Settings would not list Sarothi: no service answers ${AccessibilityService.SERVICE_INTERFACE}",
             listed.any { it.name == ACCESSIBILITY_SERVICE_CLASS },
@@ -286,29 +286,12 @@ class ManifestDeclarationInstrumentedTest {
     }
 
     @Test
-    fun the_deep_links_the_guard_offers_resolve_on_this_device() {
-        // SarothiAccessibility.serviceSettingsIntent builds the accessibility deep link from
-        // a string literal, because Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS is
-        // @SystemApi and not in the public SDK. Check the literal it produces names a
-        // service this APK actually declares.
-        // Each SpecialAccess hands the UI an intent it launches directly. An intent no
-        // activity answers would take the user to a crash or a blank screen.
-        PermissionGuard(context).specialAccess()
-            .filterNot { it.notApplicable }
-            .forEach { access ->
-                val intent = access.settingsIntent
-                assertNotNull("${access.id} offers no settings screen", intent)
-                intent ?: return@forEach
-                val resolves = packageManager
-                    .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-                    .isNotEmpty() ||
-                    packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null
-                assertTrue(
-                    "${access.id} launches ${intent.action}, which nothing on this device answers",
-                    resolves,
-                )
-            }
-
+    fun the_accessibility_deep_link_names_a_service_this_apk_declares() {
+        // SarothiAccessibility.serviceSettingsIntent builds the deep link from a string
+        // literal, because Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS is @SystemApi and
+        // is not in the public SDK at any compile level. Resolvability of every settings
+        // screen the guard offers is PermissionGuardInstrumentedTest's job; what belongs
+        // here is that the literal names the service the merged manifest really declares.
         val deepLink = SarothiAccessibility.serviceSettingsIntent(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // The action constant is @SystemApi, so it is compared as the literal string

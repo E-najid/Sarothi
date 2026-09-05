@@ -772,6 +772,93 @@ for module in MODULES:
             line, column = getattr(failure, "position", (0, 0))
             errors.append(f"{rel(path)}:{line}:{column}: XML does not parse -- {failure}")
 
+# ------------- 12. extension functions that are invisible without an import
+#
+# `compose.onNode(matcher)` reads exactly like a member call, but `onNode` is an extension
+# function on SemanticsNodeInteractionsProvider declared in androidx.compose.ui.test, so it
+# needs its own import line. Nothing at the call site hints at that, and an unresolved
+# reference is a compile error -- in a source set the build job never compiles, which means
+# it surfaces only in the instrumented job, twenty minutes after an emulator has booted.
+# That is exactly how the missing `onNode` import in MainActivityNavigationTest was found,
+# so the table is kept here rather than in someone's memory.
+EXTENSION_IMPORTS = {
+    # androidx.compose.ui.test -- SemanticsNodeInteractionsProvider extensions
+    "onNode": "androidx.compose.ui.test.onNode",
+    "onAllNodes": "androidx.compose.ui.test.onAllNodes",
+    "onRoot": "androidx.compose.ui.test.onRoot",
+    "onNodeWithText": "androidx.compose.ui.test.onNodeWithText",
+    "onAllNodesWithText": "androidx.compose.ui.test.onAllNodesWithText",
+    "onNodeWithContentDescription": "androidx.compose.ui.test.onNodeWithContentDescription",
+    "onAllNodesWithContentDescription": "androidx.compose.ui.test.onAllNodesWithContentDescription",
+    "onNodeWithTag": "androidx.compose.ui.test.onNodeWithTag",
+    "onAllNodesWithTag": "androidx.compose.ui.test.onAllNodesWithTag",
+    # androidx.compose.ui.test -- SemanticsNodeInteraction(Collection) extensions
+    "performClick": "androidx.compose.ui.test.performClick",
+    "performTouchInput": "androidx.compose.ui.test.performTouchInput",
+    "performTextInput": "androidx.compose.ui.test.performTextInput",
+    "performTextClearance": "androidx.compose.ui.test.performTextClearance",
+    "performScrollTo": "androidx.compose.ui.test.performScrollTo",
+    "performScrollToIndex": "androidx.compose.ui.test.performScrollToIndex",
+    "performScrollToNode": "androidx.compose.ui.test.performScrollToNode",
+    "performSemanticsAction": "androidx.compose.ui.test.performSemanticsAction",
+    "assertExists": "androidx.compose.ui.test.assertExists",
+    "assertDoesNotExist": "androidx.compose.ui.test.assertDoesNotExist",
+    "assertIsDisplayed": "androidx.compose.ui.test.assertIsDisplayed",
+    "assertIsNotDisplayed": "androidx.compose.ui.test.assertIsNotDisplayed",
+    "assertIsEnabled": "androidx.compose.ui.test.assertIsEnabled",
+    "assertIsNotEnabled": "androidx.compose.ui.test.assertIsNotEnabled",
+    "assertIsSelected": "androidx.compose.ui.test.assertIsSelected",
+    "assertTextEquals": "androidx.compose.ui.test.assertTextEquals",
+    "captureToImage": "androidx.compose.ui.test.captureToImage",
+    "printToLog": "androidx.compose.ui.test.printToLog",
+    # androidx.compose.ui.test -- SemanticsMatcher factories
+    "hasText": "androidx.compose.ui.test.hasText",
+    "hasTextStartingWith": "androidx.compose.ui.test.hasTextStartingWith",
+    "hasSetTextAction": "androidx.compose.ui.test.hasSetTextAction",
+    "hasClickAction": "androidx.compose.ui.test.hasClickAction",
+    "hasAnyDescendant": "androidx.compose.ui.test.hasAnyDescendant",
+    "hasAnyAncestor": "androidx.compose.ui.test.hasAnyAncestor",
+    "hasParent": "androidx.compose.ui.test.hasParent",
+    "isDialog": "androidx.compose.ui.test.isDialog",
+    "isPopup": "androidx.compose.ui.test.isPopup",
+    # androidx.compose.ui.test.junit4 -- rule factories and their content setters
+    "createComposeRule": "androidx.compose.ui.test.junit4.createComposeRule",
+    "createAndroidComposeRule": "androidx.compose.ui.test.junit4.createAndroidComposeRule",
+    "createEmptyComposeRule": "androidx.compose.ui.test.junit4.createEmptyComposeRule",
+    "setContent": "androidx.compose.ui.test.junit4.setContent",
+    "waitUntil": "androidx.compose.ui.test.junit4.waitUntil",
+    "waitUntilAtLeastOneExists": "androidx.compose.ui.test.junit4.waitUntilAtLeastOneExists",
+    "waitUntilDoesNotExist": "androidx.compose.ui.test.junit4.waitUntilDoesNotExist",
+    # org.junit.Assume -- static, but equally invisible at the call site
+    "assumeTrue": "org.junit.Assume.assumeTrue",
+    "assumeFalse": "org.junit.Assume.assumeFalse",
+    "assumeNotNull": "org.junit.Assume.assumeNotNull",
+}
+
+_CALL = re.compile(r"\.(%s)\s*[({]|(?<![.\w])(%s)\s*\(" % (
+    "|".join(map(re.escape, EXTENSION_IMPORTS)),
+    "|".join(map(re.escape, EXTENSION_IMPORTS)),
+))
+
+for path in kt_files:
+    text = path.read_text(encoding="utf-8")
+    imported = set(re.findall(r"^import\s+([\w.]+)$", text, re.M))
+    for match in _CALL.finditer(text):
+        name = match.group(1) or match.group(2)
+        needed = EXTENSION_IMPORTS[name]
+        if needed in imported:
+            continue
+        # A member function of the same name on some other type is not this extension;
+        # only flag it when the file has no declaration of its own by that name.
+        if re.search(r"\bfun\s+%s\b" % re.escape(name), text):
+            continue
+        line = text[: match.start()].count("\n") + 1
+        errors.append(
+            f"{rel(path)}:{line}: '{name}' is used but `import {needed}` is missing -- "
+            f"an unresolved reference, and in an androidTest source set the build job "
+            f"never compiles it, so only the instrumented job would have caught it"
+        )
+
 # ------------------------------------------------------------- report
 
 print(f"scanned {len(kt_files)} Kotlin files across {MODULES}\n")

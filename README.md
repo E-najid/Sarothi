@@ -21,7 +21,7 @@ Each step runs through a permission + safety gate, and is written to task_histor
 
 The whole app is written and building: **31,200 lines of Kotlin across 132 source
 files** in three modules, plus the JNI bridge to llama.cpp / whisper.cpp / espeak-ng,
-plus **186 unit tests** in 11 more files and **58 instrumentation tests** in 6 more.
+plus **186 unit tests** in 11 more files and **67 instrumentation tests** in 8 more.
 CI assembles two APKs on every push and runs the device suite on an emulator.
 
 | Module | State |
@@ -32,7 +32,7 @@ CI assembles two APKs on every push and runs the device suite on an emulator.
 | `core/src/main/cpp` — JNI bridge (llama.cpp, whisper.cpp, espeak-ng) | ✅ Implemented |
 | `.github/workflows/build.yml` — CI | ✅ Implemented |
 | Unit tests — `:core` and `:plugins`, JVM-only | ✅ 186 |
-| Instrumentation tests — `:core` and `:app`, on an emulator | ✅ 58 written; the `instrumented` job runs them |
+| Instrumentation tests — `:core` and `:app`, on an emulator | ✅ 67 written; the `instrumented` job runs them |
 | Gradle wrapper (`gradlew`, `gradle-wrapper.jar`) | ❌ Not committed (binary) |
 | `scripts/build_espeak_ng.sh`, `docs/` | ❌ Not yet written |
 
@@ -86,7 +86,7 @@ check that cannot fail is not a check.
 | Script | What it proves | Result |
 |---|---|---|
 | `verify_argon2_rfc9106.py` | Argon2id in `core/…/crypto/Argon2.kt` against the official RFC 9106 vectors | **14/14 pass**, final tag `0d640df5…e659` |
-| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists; every XML resource and manifest parses | **0 errors**, 1 known-gap warning |
+| `audit_build.py` | Every intra-project import resolves; every `R.*` reference has a resource in *its own* module; every manifest `android:name` is a real class; every `libs.*` alias exists in the version catalog; every referenced script exists; every XML resource and manifest parses; every Compose-test extension call carries the import that makes it resolve | **0 errors**, 1 known-gap warning |
 | `verify_model_catalog.py --offline` | All 9 catalogue pins are well-formed, uniquely keyed, and locatable upstream | **OK** |
 | `check_kotlin_braces.py` | Delimiter balance across all 154 Kotlin sources (149 `.kt`, 5 `.kts`) | **0 unbalanced** |
 
@@ -176,7 +176,8 @@ mines the JUnit XML so the claim can only be made when something actually ran.
 
 ### Instrumentation tests
 
-58 tests in 6 files that only mean something on a device, run by the `instrumented` job
+67 tests in 7 files — plus one in-memory `VaultFileSystem` double — that only mean
+something on a device, run by the `instrumented` job
 on an API 34 x86_64 emulator that boots cold every time — so "fresh install: no vault, no
 models, no permissions" is a fact about the device rather than an assumption left over
 from a previous run.
@@ -185,7 +186,8 @@ from a previous run.
 |---|---|---|
 | `core/crypto/SecretStoreInstrumentedTest` | 9 | The Android Keystore behind `EncryptedSharedPreferences`: every supported type round-trips, a second store over the same device sees what the first wrote, the `LockoutStore` seam reaches the same entries, and — read back off disk — neither the secret nor the name indexing it appears in the clear |
 | `core/crypto/VaultKeyDerivationInstrumentedTest` | 15 | The vault's whole promise, at the production parameters (12 MiB / 3 iterations / p=1): the two salts are independent, the verifier hash proves a passphrase but cannot open a sealed file, a sealed file is bound to its path, one flipped bit is detected, re-sealing changes the ciphertext, the format survives real storage, a password change re-keys the vault, the backoff blocks even the *correct* passphrase while its window is open and survives a process restart, every call wipes the `CharArray` it was handed, and — checked against a derivation done outside the code under test — the key `unlock()` returns really is the one this passphrase produces at 12 MiB / 3 iterations |
-| `core/screen/HonestDegradationInstrumentedTest` | 9 | The rule the rest of the project is built on: with no service bound and no capture consent, `availability()` reports every capability missing with a reason, all twelve screen actions return `Unavailable` and none returns `Done`, a snapshot says it cannot act instead of handing over an empty screen, and `NativeBridge` states exactly one of loaded or why not. `launchApp` is the positive control — it works without the service, so "everything reports unavailable" cannot pass against a build that does nothing |
+| `core/screen/HonestDegradationInstrumentedTest` | 11 | The rule the rest of the project is built on: with no service bound and no capture consent, `availability()` reports every capability missing with a reason and agrees with both registries and with system Settings, all twelve screen actions return `Unavailable` naming the service to enable, a snapshot says `UNAVAILABLE` with limitations instead of handing over an empty screen, a refused capture flags that consent is what is missing, `describeScreen` proposes no taps, nothing anywhere claims `verified`, and `NativeBridge` states exactly one of loaded or why not. `launchApp` is the positive control — it goes through `startActivity`, so it works with nothing bound, and it must then report that it could not *confirm* the foreground changed. Without that, "every capability reports unavailable" would also pass against a controller that does nothing at all |
+| `core/storage/VaultRotationInstrumentedTest` | 7 | Changing the vault passphrase, which means re-sealing every memory file because the key *is* `Argon2id(passphrase, salt)`: the four seeded files open with the new key and not with the old, `manifest.json` moves to the new protection record, plaintext logs are byte-identical afterwards, the new passphrase unlocks a fresh manager and the old one does not, no `.rotating` temp or `.rotation` directory is left on the card, a wrong current passphrase or a locked vault changes nothing at all, and — the reason the suite exists — a change interrupted after publishing its record finishes itself with no passphrase at all, leaving the vault locked and openable only with the new one |
 | `app/ManifestDeclarationInstrumentedTest` | 10 | What the *installed APK* actually declares, read back through the platform: the accessibility service carries `BIND_ACCESSIBILITY_SERVICE` and answers the intent Settings queries; its config grants window content, gestures and notification events; the `settingsActivity` it advertises resolves to a real exported activity; the foreground services carry the types Android 14 enforces; the boot receiver is registered; backup is off; and every permission a plugin needs is in the manifest, because `requestPermissions()` for an undeclared permission is refused forever and silently |
 | `app/safety/PermissionGuardInstrumentedTest` | 9 | The guard against a real `PackageManager` over all 78 plugins: every verdict is internally consistent and names its plugin, every special access is something the user can actually reach, no plugin is gated on a switch this APK cannot appear in, every key in the plugin/access map is a real plugin, dangerous permissions are all missing on a fresh install and the plugins needing them are refused, and every permission has a plain-language reason in English and Bangla |
 | `app/ui/MainActivityNavigationTest` | 6 | A cold start builds the graph and renders instead of crashing; all eleven screens compose; the Task screen on a fresh install shows why it cannot run and exposes no text field that accepts input; the Models screen shows the memory tier this device really has; and all seven sub-screens open, render their own content, and come back |
@@ -298,6 +300,20 @@ Lockout is 3 free attempts then exponential backoff. Biometric unlock is
 **convenience only**: it unwraps a key the passphrase could have produced anyway,
 gated by an Android Keystore AES key. It never authorises anything the password
 could not.
+
+Changing the passphrase re-seals every file, because the key *is*
+`Argon2id(passphrase, key_salt)` — there is no wrapped data key behind it to
+re-wrap. The change is ordered to survive being killed, which on a 3 GB phone is
+a real event rather than a corner case: each new copy is written beside its
+original as `<path>.rotating` and read back before anything is overwritten, the
+new protection record is published to `memories/.rotation/rotation.json`, and
+only then are originals replaced, one line appended to a progress file each.
+`resumeInterruptedRotation()` finishes an interrupted change from those temp
+files and that record alone — no passphrase, because after a kill there may be
+nobody who remembers both — and runs when the folder is attached, so a
+half-changed vault repairs itself before anyone is asked to unlock it. A
+rotation clears the biometric enrolment: what it wrapped was the key that just
+stopped existing.
 
 There are no server-side secrets and no hardcoded keys. Security comes entirely
 from the user's password.
@@ -436,7 +452,7 @@ is still outstanding:
    artifact files, or run `gradle wrapper --gradle-version 8.11.1` locally.
 4. **`docs/`** — build instructions, vault/SD-card portability guide, threat model.
 5. ~~**`LICENSE`**~~ — **added: Apache License 2.0.** See [Licence](#licence).
-6. ~~**Instrumentation tests**~~ — **written: 58 tests in 6 files, run by the
+6. ~~**Instrumentation tests**~~ — **written: 67 tests in 7 files, run by the
    `instrumented` job on an emulator.** See [Instrumentation tests](#instrumentation-tests)
    for what each suite covers and the two defects writing them found. What an emulator
    still cannot cover is listed under
@@ -444,12 +460,20 @@ is still outstanding:
    runtimes, a MediaProjection consent dialog, a real model download, an SD-card vault,
    biometric unlock, and the accessibility service actually bound and reading a live tree.
    Those need a physical phone and a person.
-7. **Rotating the vault passphrase.** `MasterKeyManager.changePassword()` produces a new
-   protection record and is tested, but nothing calls it: changing a passphrase also means
-   re-sealing every file in `/memories/` with the key the new passphrase derives and
-   rewriting `manifest.json`, and that operation is not written. The vault screen therefore
-   offers no "change passphrase" button rather than one that would quietly leave the
-   memories encrypted under the old key.
+7. ~~**Rotating the vault passphrase**~~ — **written: `VaultManager.changePassphrase()`,
+   reachable from the vault screen, covered by `VaultRotationInstrumentedTest`.** Because the
+   vault key *is* `Argon2id(passphrase, key_salt)` there is no wrapped data key to re-wrap,
+   so rotation re-seals every file. It is ordered so that being killed part-way through is
+   recoverable without any passphrase: each new copy is written beside its original and read
+   back before anything is overwritten, the new protection record is published to
+   `memories/.rotation/rotation.json`, and only then are originals replaced, one progress
+   line each. `resumeInterruptedRotation()` finishes that from the temp files and the
+   published record alone and runs when the folder is attached, so a half-changed vault
+   repairs itself before anyone is asked to unlock it. Biometric unlock is cleared by a
+   rotation rather than left holding a key that opens nothing. What the suite proves is that
+   file choreography, run against the in-memory `VaultFileSystem` because a SAF tree cannot
+   be obtained without a person tapping through the system picker; the provider's own
+   behaviour is `SafVaultFileSystem`'s and needs a phone with a card in it.
 
 ---
 

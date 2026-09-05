@@ -5,7 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import com.ngi.sarothi.core.crypto.KdfParameters
 import com.ngi.sarothi.core.crypto.MasterKeyManager
+import com.ngi.sarothi.core.crypto.EncryptedFileFormat
 import com.ngi.sarothi.core.crypto.SecretStore
+import com.ngi.sarothi.core.crypto.VaultSecurity
 import com.ngi.sarothi.core.error.VaultLockedException
 import com.ngi.sarothi.core.error.VaultNotInitializedException
 import com.ngi.sarothi.core.model.CatalogModel
@@ -13,6 +15,8 @@ import com.ngi.sarothi.core.model.ChecksumPolicy
 import com.ngi.sarothi.core.model.ModelCatalog
 import com.ngi.sarothi.core.util.Hashing
 import com.ngi.sarothi.core.util.Json
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /** What Sarothi found when the user pointed it at a folder. */
@@ -85,6 +89,23 @@ data class ModelAudit(val states: Map<String, ModelState>) {
 }
 
 /**
+ * What [VaultManager.changePassphrase] did.
+ *
+ * A refusal is a value rather than an exception because the common refusals -- a wrong
+ * passphrase, a locked vault -- are ordinary outcomes the UI shows inline, and because
+ * an interruption halfway through re-encrypting has to be reported with instructions
+ * rather than surfacing as a crash.
+ */
+sealed interface PassphraseChange {
+
+    /** Every sealed file was re-encrypted and the manifest now points at the new record. */
+    data class Changed(val filesRotated: Int) : PassphraseChange
+
+    /** Nothing was changed, or the change was interrupted and must be finished. */
+    data class Refused(val reason: String) : PassphraseChange
+}
+
+/**
  * Owns the vault's lifecycle: choosing the folder, taking the persistable URI
  * permission, creating or restoring, holding the unlocked master key, and auditing
  * model integrity.
@@ -100,8 +121,17 @@ class VaultManager(
     val masterKeys: MasterKeyManager,
 ) {
 
+    /**
+     * The attached folder.
+     *
+     * The setter is `internal` rather than private so a test can put a
+     * [VaultFileSystem] implementation of its own behind a real [VaultManager] -- the
+     * interface exists for exactly that, and the alternative is that nothing but a
+     * person holding a phone can ever exercise vault lifecycle code. Production code
+     * sets it in [attach] and [reattach] only.
+     */
     var fileSystem: VaultFileSystem? = null
-        private set
+        internal set
 
     var manifest: VaultManifest? = null
         private set
@@ -172,8 +202,14 @@ class VaultManager(
         if (fs.exists(VaultPaths.MANIFEST)) {
             val parsed = runCatching { VaultManifest.parse(fs.readFile(VaultPaths.MANIFEST)) }
             if (parsed.isSuccess) {
-                val loadedManifest = parsed.getOrThrow()
+                var loadedManifest = parsed.getOrThrow()
                 manifest = loadedManifest
+                // A passphrase change killed halfway through is finished here, before the
+                // user is asked for a passphrase: it may already be the new one.
+                if (resumeInterruptedRotation()) {
+                    loadedManifest = VaultManifest.parse(fs.readFile(VaultPaths.MANIFEST))
+                    manifest = loadedManifest
+                }
                 return VaultAttachResult.ExistingVault(fs, loadedManifest, auditModels(fs, loadedManifest))
             }
             return VaultAttachResult.NotAVault(
@@ -216,6 +252,9 @@ class VaultManager(
             runCatching { VaultManifest.parse(fs.readFile(VaultPaths.MANIFEST)) }.getOrNull()
         } else {
             null
+        }
+        if (resumeInterruptedRotation()) {
+            manifest = runCatching { VaultManifest.parse(fs.readFile(VaultPaths.MANIFEST)) }.getOrNull()
         }
         return true
     }
@@ -477,6 +516,269 @@ class VaultManager(
     fun persistManifest() {
         val current = manifest ?: throw VaultNotInitializedException("No manifest is loaded")
         requireFileSystem().writeFile(VaultPaths.MANIFEST, current.serialize())
+    }
+
+    // ------------------------------------------------------- passphrase change
+
+    /**
+     * Changes the vault passphrase by re-sealing every encrypted file under a key derived
+     * from the new one.
+     *
+     * The vault key *is* `Argon2id(passphrase, key_salt)` -- there is no wrapped data key
+     * sitting behind it -- so changing the passphrase means rewriting every sealed file.
+     * That has to survive being interrupted, because a phone with 3 GB of RAM can be
+     * killed at any instruction. The order below is what makes that safe:
+     *
+     *  1. Every sealed file is opened with the key in memory and written *beside itself*
+     *     as `<path>.rotating`, then read back and compared. No original is touched, so a
+     *     failure here costs time and nothing else.
+     *  2. The new protection record is published to `memories/.rotation/rotation.json`.
+     *     From this moment the remaining work needs no key at all.
+     *  3. Each original is overwritten with its new copy, and its path appended to
+     *     `memories/.rotation/progress` as it lands.
+     *  4. The manifest is pointed at the new record.
+     *
+     * A kill during 3 or 4 leaves files sealed with the new passphrase while the manifest
+     * still names the old one, which is exactly the state [resumeInterruptedRotation]
+     * finishes -- from the temp files and the published record, without any passphrase. It
+     * runs when the folder is attached, so the vault repairs itself before the user is
+     * asked to type anything.
+     *
+     * Both arrays are consumed: [MasterKeyManager.verifyPassword] wipes
+     * [currentPassword] and [MasterKeyManager.createKeyMaterial] wipes [newPassword].
+     * Neither may be used again after this call.
+     */
+    suspend fun changePassphrase(
+        currentPassword: CharArray,
+        newPassword: CharArray,
+    ): PassphraseChange = withContext(Dispatchers.IO) {
+        // Refusals before the passphrase is used are this function's to clean up: nothing
+        // downstream consumed either array, and a passphrase left sitting in a CharArray
+        // is one heap dump away from being readable.
+        fun refuse(reason: String): PassphraseChange.Refused {
+            currentPassword.fill(0)
+            newPassword.fill(0)
+            return PassphraseChange.Refused(reason)
+        }
+
+        val fs = fileSystem ?: return@withContext refuse(
+            "No folder is attached, so there is nothing to re-encrypt.",
+        )
+        val currentManifest = manifest ?: return@withContext refuse(
+            "No vault is loaded. Attach the folder and unlock it first.",
+        )
+        val oldKey = masterKey ?: return@withContext refuse(
+            "The vault is locked. Unlock it before changing the passphrase.",
+        )
+
+        if (!masterKeys.verifyPassword(currentManifest.security, currentPassword, recordFailure = true)) {
+            val state = masterKeys.lockout.state()
+            // verifyPassword consumed the current passphrase; the new one was nobody's yet.
+            newPassword.fill(0)
+            return@withContext PassphraseChange.Refused(
+                "That is not the passphrase this vault was sealed with. " +
+                    if (state.lockedUntilEpochMillis != null) {
+                        "Too many attempts -- wait ${state.lockedUntilEpochMillis - System.currentTimeMillis()} " +
+                            "ms before trying again."
+                    } else {
+                        "${masterKeys.lockout.attemptsRemaining()} attempt(s) remain before a wait is imposed."
+                    },
+            )
+        }
+        masterKeys.lockout.recordSuccess()
+
+        // One pass over the new passphrase, producing the record and the key together;
+        // deriving the key from the array afterwards would derive it from NULs.
+        val material = masterKeys.createKeyMaterial(newPassword)
+        val paths = vaultFiles(fs).filterNot { it.endsWith(Rotation.TEMP_SUFFIX) }
+        val temps = mutableListOf<String>()
+        var overwriting = false
+
+        try {
+            for (path in paths) {
+                val sealed = fs.readFile(path)
+                // Logs and task history are deliberately plaintext, and models are not
+                // encrypted at all: only files that carry the sealed-format header are
+                // this function's business.
+                if (!EncryptedFileFormat.isSealed(sealed)) continue
+
+                val plaintext = runCatching { EncryptedFileFormat.open(oldKey, path, sealed) }
+                    .getOrElse { failure ->
+                        throw VaultLockedException(
+                            "'$path' carries the sealed-format header but the key in memory " +
+                                "cannot open it (${failure.javaClass.simpleName}: ${failure.message}). " +
+                                "The passphrase cannot be changed until that file is restored.",
+                        )
+                    }
+                val temp = "$path${Rotation.TEMP_SUFFIX}"
+                fs.writeFile(temp, EncryptedFileFormat.seal(material.key, path, plaintext))
+
+                // Prove the new copy before the original is overwritten. A re-encrypted
+                // file that does not read back is silent data loss.
+                val proved = EncryptedFileFormat.open(material.key, path, fs.readFile(temp))
+                val identical = proved.contentEquals(plaintext)
+                plaintext.fill(0)
+                proved.fill(0)
+                if (!identical) {
+                    throw VaultLockedException(
+                        "The re-encrypted copy of '$path' did not read back as the same bytes. " +
+                            "The original has been left untouched.",
+                    )
+                }
+                temps += temp
+            }
+
+            fs.createDirectories(Rotation.DIR)
+            fs.writeFile(
+                Rotation.RECORD,
+                Json.pretty(material.security.toJson()).toByteArray(Charsets.UTF_8),
+            )
+            fs.writeFile(Rotation.PROGRESS, ByteArray(0))
+
+            overwriting = true
+            for (temp in temps) {
+                val path = temp.removeSuffix(Rotation.TEMP_SUFFIX)
+                fs.writeFile(path, fs.readFile(temp))
+                fs.openOutputStream(Rotation.PROGRESS, append = true).use { out ->
+                    out.write((path + "\n").toByteArray(Charsets.UTF_8))
+                }
+            }
+
+            // Files are new-key sealed from here, so the key in memory is swapped before
+            // the manifest write that makes it official.
+            masterKey = material.key
+            manifest = currentManifest.withSecurity(material.security)
+            persistManifest()
+        } catch (failure: Exception) {
+            material.key.fill(0)
+            if (overwriting) {
+                oldKey.fill(0)
+                masterKey = null
+                return@withContext PassphraseChange.Refused(
+                    "The passphrase change was interrupted (${failure.javaClass.simpleName}: " +
+                        "${failure.message}). Memory files are already sealed with the new " +
+                        "passphrase. Reopen the vault folder and Sarothi will finish the change " +
+                        "on its own; until then the vault stays locked.",
+                )
+            }
+            temps.forEach { runCatching { fs.deleteFile(it) } }
+            runCatching { deleteRecursively(fs, Rotation.DIR) }
+            return@withContext PassphraseChange.Refused(
+                "Nothing was changed (${failure.javaClass.simpleName}: ${failure.message}). " +
+                    "The vault is still sealed with the passphrase it had.",
+            )
+        }
+
+        temps.forEach { runCatching { fs.deleteFile(it) } }
+        runCatching { deleteRecursively(fs, Rotation.DIR) }
+        oldKey.fill(0)
+        PassphraseChange.Changed(temps.size)
+    }
+
+    /** Whether an interrupted passphrase change is waiting to be finished. */
+    fun rotationPending(): Boolean = fileSystem?.exists(Rotation.RECORD) == true
+
+    /**
+     * Finishes a passphrase change that was interrupted, and clears up after one that was
+     * abandoned before it overwrote anything.
+     *
+     * Needs no passphrase and no key: the `<path>.rotating` files already hold the bytes
+     * sealed with the new key, `rotation.json` already holds the new protection record, and
+     * `progress` says which originals were already replaced. That is deliberate -- the
+     * alternative is a vault that can only be repaired by someone who remembers two
+     * passphrases.
+     *
+     * Called from [attach] and [reattach], so a vault left half-changed repairs itself the
+     * next time its folder is opened, before anyone is asked to unlock it. Idempotent: with
+     * nothing pending it returns false and changes nothing.
+     *
+     * @return true when a pending change was finished, false when there was nothing to do.
+     */
+    fun resumeInterruptedRotation(): Boolean {
+        val fs = fileSystem ?: return false
+        val record = if (fs.exists(Rotation.RECORD)) {
+            runCatching {
+                VaultSecurity.fromJson(Json.parseObject(fs.readFile(Rotation.RECORD).toString(Charsets.UTF_8)))
+            }.getOrNull()
+        } else {
+            null
+        }
+
+        val temps = vaultFiles(fs).filter { it.endsWith(Rotation.TEMP_SUFFIX) }
+        if (record == null) {
+            // No published record means the change never got past writing temps, so no
+            // original was overwritten and the temps are only rubbish. A record that
+            // exists but cannot be parsed is left alone: guessing here would mean
+            // choosing which of two passphrases protects the vault.
+            if (!fs.exists(Rotation.RECORD)) {
+                temps.forEach { runCatching { fs.deleteFile(it) } }
+            }
+            return false
+        }
+
+        val done = runCatching {
+            fs.readFile(Rotation.PROGRESS).toString(Charsets.UTF_8).lines().filter { it.isNotBlank() }.toSet()
+        }.getOrDefault(emptySet())
+
+        for (temp in temps) {
+            val path = temp.removeSuffix(Rotation.TEMP_SUFFIX)
+            if (path in done) {
+                runCatching { fs.deleteFile(temp) }
+                continue
+            }
+            fs.writeFile(path, fs.readFile(temp))
+            runCatching { fs.openOutputStream(Rotation.PROGRESS, append = true) }
+                .onSuccess { out -> out.use { it.write((path + "\n").toByteArray(Charsets.UTF_8)) } }
+            runCatching { fs.deleteFile(temp) }
+        }
+
+        val current = manifest
+            ?: runCatching { VaultManifest.parse(fs.readFile(VaultPaths.MANIFEST)) }.getOrNull()
+        if (current != null) {
+            manifest = current.withSecurity(record)
+            persistManifest()
+        }
+        // Whatever key was in memory came from the passphrase that no longer protects
+        // these files.
+        masterKey?.fill(0)
+        masterKey = null
+        runCatching { deleteRecursively(fs, Rotation.DIR) }
+        return true
+    }
+
+    /**
+     * Every file in the vault except the models directory, which holds 60-220 MB of
+     * unencrypted GGUF that reading would only waste time on, and the rotation directory
+     * itself. Relative paths, in the form the sealed format binds as additional data.
+     */
+    private fun vaultFiles(fs: VaultFileSystem, directory: String = ""): List<String> {
+        val out = mutableListOf<String>()
+        for (entry in fs.listFiles(directory)) {
+            val path = if (directory.isEmpty()) entry.name else "$directory/${entry.name}"
+            if (entry.isDirectory) {
+                if (path == VaultPaths.MODELS_DIR || path == Rotation.DIR) continue
+                out += vaultFiles(fs, path)
+            } else {
+                out += path
+            }
+        }
+        return out
+    }
+
+    private fun deleteRecursively(fs: VaultFileSystem, directory: String) {
+        for (entry in fs.listFiles(directory)) {
+            val path = "$directory/${entry.name}"
+            if (entry.isDirectory) deleteRecursively(fs, path) else runCatching { fs.deleteFile(path) }
+        }
+        runCatching { fs.deleteFile(directory) }
+    }
+
+    /** Where an interrupted passphrase change keeps the state that lets it be finished. */
+    private object Rotation {
+        const val DIR = "${VaultPaths.MEMORIES_DIR}/.rotation"
+        const val RECORD = "$DIR/rotation.json"
+        const val PROGRESS = "$DIR/progress"
+        const val TEMP_SUFFIX = ".rotating"
     }
 
     /** Releases the grant and forgets the folder. Does not touch the folder's contents. */

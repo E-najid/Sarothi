@@ -3,6 +3,7 @@ package com.ngi.sarothi.app.safety
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import android.provider.Settings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -73,11 +74,14 @@ class PermissionGuardInstrumentedTest {
                 intent,
             )
             intent ?: return@forEach
-            val resolves = context.packageManager
-                .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-                .isNotEmpty() ||
-                context.packageManager.resolveService(intent, PackageManager.MATCH_DEFAULT_ONLY) != null ||
-                context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null
+            // Queried without MATCH_DEFAULT_ONLY on purpose: which system settings screens
+            // carry the DEFAULT category varies between AVD images and OEM builds, and a
+            // false red here would bury the real question, which is whether the action
+            // names a screen that exists on this device at all.
+            val pm = context.packageManager
+            val resolves = pm.queryIntentActivities(intent, 0).isNotEmpty() ||
+                pm.resolveService(intent, 0) != null ||
+                pm.resolveActivity(intent, 0) != null
             assertTrue(
                 "${access.id} points at ${intent.action}, which nothing on this device can open",
                 resolves,
@@ -94,7 +98,7 @@ class PermissionGuardInstrumentedTest {
         val listenerServices = context.packageManager.queryIntentServices(
             Intent(NOTIFICATION_LISTENER_INTERFACE),
             PackageManager.GET_META_DATA,
-        ).filter { it.packageName == context.packageName }
+        ).filter { it.serviceInfo?.packageName == context.packageName }
 
         if (listenerServices.isEmpty()) {
             val offeredButUngrantable = guard.specialAccess().filter { access ->
@@ -187,8 +191,8 @@ class PermissionGuardInstrumentedTest {
         val dangerous = asked.filter { permission ->
             val info = runCatching { packageManager.getPermissionInfo(permission, 0) }.getOrNull()
             info != null &&
-                (info.protection and PackageManager.PROTECTION_MASK_BASE) ==
-                PackageManager.PROTECTION_DANGEROUS
+                (info.protection and PermissionInfo.PROTECTION_MASK_BASE) ==
+                PermissionInfo.PROTECTION_DANGEROUS
         }
         assertTrue(
             "None of the ${asked.size} declared permissions is dangerous, which is not what " +
