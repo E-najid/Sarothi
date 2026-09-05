@@ -774,25 +774,32 @@ for module in MODULES:
 
 # ------------- 12. extension functions that are invisible without an import
 #
-# `compose.onNode(matcher)` reads exactly like a member call, but `onNode` is an extension
-# function on SemanticsNodeInteractionsProvider declared in androidx.compose.ui.test, so it
-# needs its own import line. Nothing at the call site hints at that, and an unresolved
-# reference is a compile error -- in a source set the build job never compiles, which means
-# it surfaces only in the instrumented job, twenty minutes after an emulator has booted.
-# That is exactly how the missing `onNode` import in MainActivityNavigationTest was found,
-# so the table is kept here rather than in someone's memory.
+# `performClick()` reads exactly like a member call, but it is an extension function on
+# SemanticsNodeInteraction declared in androidx.compose.ui.test, so it needs its own import
+# line. Nothing at the call site hints at that, and an unresolved reference is a compile
+# error -- in a source set the build job never compiles, which means it surfaces only in the
+# instrumented job, twenty minutes after an emulator has booted.
+#
+# The table has to hold top-level declarations only, and that is a fact worth recording the
+# expensive way it was learned. This check used to demand `import
+# androidx.compose.ui.test.assertExists`, `.assertDoesNotExist` and `.onNode`. Those are not
+# extension functions at all: assertExists and assertDoesNotExist are members of
+# SemanticsNodeInteraction, and onNode/onAllNodes/onRoot are members of
+# SemanticsNodeInteractionsProvider, so importing one is itself an unresolved reference. The
+# audit was therefore manufacturing four of the nine compile errors it existed to prevent, in
+# the one job that takes twenty minutes to reach. A checker that guesses is worse than no
+# checker, so everything below is a declaration whose import line the compiler has accepted,
+# and the members are listed separately with the opposite rule.
 EXTENSION_IMPORTS = {
-    # androidx.compose.ui.test -- SemanticsNodeInteractionsProvider extensions
-    "onNode": "androidx.compose.ui.test.onNode",
-    "onAllNodes": "androidx.compose.ui.test.onAllNodes",
-    "onRoot": "androidx.compose.ui.test.onRoot",
     "onNodeWithText": "androidx.compose.ui.test.onNodeWithText",
     "onAllNodesWithText": "androidx.compose.ui.test.onAllNodesWithText",
     "onNodeWithContentDescription": "androidx.compose.ui.test.onNodeWithContentDescription",
     "onAllNodesWithContentDescription": "androidx.compose.ui.test.onAllNodesWithContentDescription",
     "onNodeWithTag": "androidx.compose.ui.test.onNodeWithTag",
     "onAllNodesWithTag": "androidx.compose.ui.test.onAllNodesWithTag",
-    # androidx.compose.ui.test -- SemanticsNodeInteraction(Collection) extensions
+    # androidx.compose.ui.test -- SemanticsNodeInteractionsProvider extensions. onNode,
+    # onAllNodes and onRoot are NOT here: they are members, and importing a member is an
+    # error, not a fix.
     "performClick": "androidx.compose.ui.test.performClick",
     "performTouchInput": "androidx.compose.ui.test.performTouchInput",
     "performTextInput": "androidx.compose.ui.test.performTextInput",
@@ -801,8 +808,6 @@ EXTENSION_IMPORTS = {
     "performScrollToIndex": "androidx.compose.ui.test.performScrollToIndex",
     "performScrollToNode": "androidx.compose.ui.test.performScrollToNode",
     "performSemanticsAction": "androidx.compose.ui.test.performSemanticsAction",
-    "assertExists": "androidx.compose.ui.test.assertExists",
-    "assertDoesNotExist": "androidx.compose.ui.test.assertDoesNotExist",
     "assertIsDisplayed": "androidx.compose.ui.test.assertIsDisplayed",
     "assertIsNotDisplayed": "androidx.compose.ui.test.assertIsNotDisplayed",
     "assertIsEnabled": "androidx.compose.ui.test.assertIsEnabled",
@@ -813,7 +818,6 @@ EXTENSION_IMPORTS = {
     "printToLog": "androidx.compose.ui.test.printToLog",
     # androidx.compose.ui.test -- SemanticsMatcher factories
     "hasText": "androidx.compose.ui.test.hasText",
-    "hasTextStartingWith": "androidx.compose.ui.test.hasTextStartingWith",
     "hasSetTextAction": "androidx.compose.ui.test.hasSetTextAction",
     "hasClickAction": "androidx.compose.ui.test.hasClickAction",
     "hasAnyDescendant": "androidx.compose.ui.test.hasAnyDescendant",
@@ -857,6 +861,35 @@ for path in kt_files:
             f"{rel(path)}:{line}: '{name}' is used but `import {needed}` is missing -- "
             f"an unresolved reference, and in an androidTest source set the build job "
             f"never compiles it, so only the instrumented job would have caught it"
+        )
+
+# The mirror image of the check above: a member function cannot be imported, and Kotlin
+# reports the import line itself as an unresolved reference. Nothing at the import site says
+# which of the two a name is, and both mistakes look identical in the source -- a name that
+# is used correctly at the call site and fails to compile anyway.
+UNIMPORTABLE_COMPOSE_TEST = {
+    "androidx.compose.ui.test.onNode": "a member of SemanticsNodeInteractionsProvider",
+    "androidx.compose.ui.test.onAllNodes": "a member of SemanticsNodeInteractionsProvider",
+    "androidx.compose.ui.test.onRoot": "a member of SemanticsNodeInteractionsProvider",
+    "androidx.compose.ui.test.assertExists": "a member of SemanticsNodeInteraction",
+    "androidx.compose.ui.test.assertDoesNotExist": "a member of SemanticsNodeInteraction",
+    "androidx.compose.ui.test.assertIsDeactivated": "a member of SemanticsNodeInteraction",
+    "androidx.compose.ui.test.fetchSemanticsNode": "a member of SemanticsNodeInteraction",
+    # Compose ships hasText(text, substring = true) and no matcher anchored to the start of a
+    # node. A test that needs a prefix matcher declares one over SemanticsProperties.Text.
+    "androidx.compose.ui.test.hasTextStartingWith": "not a Compose API at any version",
+}
+
+for path in kt_files:
+    text = path.read_text(encoding="utf-8")
+    for match in re.finditer(r"^import\s+([\w.]+)$", text, re.M):
+        target = match.group(1)
+        if target not in UNIMPORTABLE_COMPOSE_TEST:
+            continue
+        line = text[: match.start()].count("\n") + 1
+        errors.append(
+            f"{rel(path)}:{line}: `import {target}` cannot resolve -- {UNIMPORTABLE_COMPOSE_TEST[target]}. "
+            f"The call site is correct without the import; delete the line"
         )
 
 # ------------------------- 13. a CharArray wiped with an Int literal
